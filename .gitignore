@@ -179,7 +179,7 @@ Runs
 
 Temp
 
-Models
+Models/*
 
 !Models/__init__.py
 !Models/TrajWeaver

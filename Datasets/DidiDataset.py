@@ -1,15 +1,7 @@
 from JimmyTorch.Datasets import *
-
 import torch
-import torch.utils.data as data
-import numpy as np
-import os
 from typing import *
-import random
-import scipy.stats as stats
-from rich.progress import track
 from rich.status import Status
-from torch.nn.functional import pad
 
 
 class DidiDataset(JimmyDataset):
@@ -136,23 +128,23 @@ class DidiDataset(JimmyDataset):
             trajs_guess[b] = DidiDataset.guessTraj(trajs[b], percent_times[b], query_mask[b])
 
         return {
-            "traj": trajs,
-            "road": self.traj_roads[indices].to(DEVICE),
-            "percent_time": percent_times,
-            "traj_guess": trajs_guess,
-            "query_mask": query_mask,
-            "traj_len": traj_lens,
-            "road_len": self.road_lens[indices].to(DEVICE),
-            "erase_rate": erase_rates,
-            "query_size": n_erased,
-            "observe_size": traj_lens - n_erased,
-            "driver_id": self.driver_ids[indices].to(DEVICE),
-            "start_weekday": self.start_weekdays[indices].to(DEVICE),
-            "start_seconds": self.start_seconds[indices].to(DEVICE),
-            "duration": self.durations[indices].to(DEVICE),
-            "point_mean": self.point_mean,
-            "point_std": self.point_std,
-            "driver_count": self.driver_count,
+            "traj": trajs,  # (B, L, 2)
+            "road": self.traj_roads[indices].to(DEVICE),    # (B, L, 2)
+            "percent_time": percent_times,  # (B, L)
+            "traj_guess": trajs_guess,  # (B, L)
+            "query_mask": query_mask,   # (B, L)
+            "traj_len": traj_lens,      # (B, )
+            "road_len": self.road_lens[indices].to(DEVICE),     # (B, )
+            "erase_rate": erase_rates,              # (B, )
+            "query_size": n_erased,                 # (B, )
+            "observe_size": traj_lens - n_erased,   # (B, )
+            "driver_id": self.driver_ids[indices].to(DEVICE),           # (B, )
+            "start_weekday": self.start_weekdays[indices].to(DEVICE),   # (B, )
+            "start_seconds": self.start_seconds[indices].to(DEVICE),    # (B, )
+            "duration": self.durations[indices].to(DEVICE),             # (B, )
+            "point_mean": self.point_mean,      # (1, 2)
+            "point_std": self.point_std,        # (1, 2)
+            "driver_count": self.driver_count,  # torch.int32
         }
 
 

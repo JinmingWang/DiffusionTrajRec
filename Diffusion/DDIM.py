@@ -129,7 +129,13 @@ class DDIM:
         """
         x_t = x_T.clone()
         all_t = torch.arange(self.T, dtype=torch.long, device=self.device).repeat(x_T.shape[0], 1)  # (B, T)
-        t_schedule = list(range(self.T - 1, self.skip_step, -self.skip_step)) + list(range(self.skip_step, -1, -1))
+
+        # [T, T-s, T-2s, ..., k], k >= 0
+        t_schedule = list(range(self.T - 1, 0, -self.skip_step))
+        if t_schedule[-1] != 0:
+            t_schedule.extend(list(range(t_schedule[-1] - 1, -1, -1)))
+        # [T, T-s, T-2s, ..., k, k-1, ..., 0] if k > 0
+
         pbar = tqdm(t_schedule) if verbose else t_schedule
         for ti, t in enumerate(pbar):
             x0_pred, epsilon_pred = pred_func(x_t, all_t[:, t], **pred_func_args)
