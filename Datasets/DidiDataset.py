@@ -2,15 +2,38 @@ from JimmyTorch.Datasets import *
 import torch
 from typing import *
 from rich.status import Status
+import os
 
+
+"""
+The dataset definition during pre-processing is as follows:
+
+traj length in [32, 512]
+
+processed_dataset = {
+        "traj": [],                 # trajectory: (L_traj, 2) fp32
+        "traj_len": [],             # number of points in each trajectory int32
+        "match_road": [],           # matched road: (L_road, 2) fp32
+        "road_len": [],             # number of points in each matched road int32
+        "%time": [],                # % of each point in the whole trip (L_traj, 1) fp32
+        "driver_id": [],            # driver ID int32
+        "start_weekday": [],        # start weekday int32
+        "start_second": [],         # start second within a day int32
+        "duration": [],             # duration in seconds int32
+        "point_mean": None,         # mean of points in trajectory (1, 2) fp32
+        "point_std": None,          # std of points in trajectory (1, 2) fp32
+        "driver_count": 0,          # number of drivers int32
+    }
+"""
 
 class DidiDataset(JimmyDataset):
     def __init__(self,
-                 load_path: str,
+                 dataset_root: str,
+                 city_name: Literal['Xian', 'Chengdu'],
+                 set_name: Literal['train', 'eval', 'test', 'debug'],
                  pad_to_len: int,
                  min_erase_rate: float,
                  max_erase_rate: float,
-                 set_name: Literal['train', 'eval', 'test', 'debug'],
                  batch_size: int,
                  drop_last: bool = False,
                  shuffle: bool = False,
@@ -22,51 +45,45 @@ class DidiDataset(JimmyDataset):
         self.min_erase_rate = min_erase_rate
         self.max_erase_rate = max_erase_rate
 
-        match set_name:
-            case "train":
-                start, end = 0.0, 0.8
-            case "eval":
-                start, end = 0.8, 0.9
-            case "test":
-                start, end = 0.9, 1.0
-            case "debug":
-                start, end = 0.0, 0.05
-            case _:
-                raise ValueError(f"Unknown set_name: {set_name}")
+        load_path = os.path.join(dataset_root, f"{city_name}_{set_name}.pth")
 
         with Status(f'Loading {load_path} from disk...'):
             dataset = torch.load(load_path)
+
+            # --- Sequential Features ---
             self.trajs = dataset["traj"]
-            n_trajs = len(self.trajs)
-            start = int(n_trajs * start)
-            end = int(n_trajs * end) + 1
+            self.match_roads = dataset["match_road"]  # B * (L_road[b], 2)
+            self.percent_times = dataset["%time"]  # B * (L_traj[b], )
 
-            self.trajs = self.trajs[start:end]                             # B * (L_traj[b], 2)
-            self.traj_roads = dataset["traj_road"][start:end]              # B * (L_road[b], 2)
-            self.percent_times = dataset["percent_times"][start:end]       # B * (L_traj[b], )
+            # --- Integer Features ---
+            self.traj_lens = dataset["traj_len"]
+            self.road_lens = dataset["road_len"]
+            self.driver_ids = dataset["driver_id"]
+            self.start_weekdays = dataset["start_weekday"]
+            self.start_seconds = dataset["start_second"]
+            self.durations = dataset["duration"]
 
-            # Pad the trajectories to the same length
+            # --- Constant Features ---
+            self.point_mean = dataset["point_mean"].to(DEVICE)  # (1, 2)
+            self.point_std = dataset["point_std"].to(DEVICE)  # (1, 2)
+            self.driver_count = dataset["driver_count"]  # int
+
+            self.n_samples = len(self.trajs)
+
+            # Unify the length of sequences
             for b in range(len(self.trajs)):
+                # Trajectories are 0-padded
                 self.trajs[b] = cropPadTraj(self.trajs[b], self.pad_to_len, 0.0)
-                self.traj_roads[b] = cropPadTraj(self.traj_roads[b], self.pad_to_len, 0.0)
-                self.percent_times[b] = cropPadSequence(self.percent_times[b].unsqueeze(-1), self.pad_to_len, 0.0)
+                # times are 1-padded, because %time for each traj is 0.0 to 1.0
+                self.percent_times[b] = cropPadSequence(self.percent_times[b].unsqueeze(-1), self.pad_to_len, 1.0)
+                # matched roads are interpolated to the same length
+                # because map-matched traj has different lengths compared to the original traj
+                self.match_roads[b] = interpTraj(self.match_roads[b], self.pad_to_len, mode="linear")
 
             self.trajs = torch.stack(self.trajs, dim=0)                     # (B, L_max, 2)
-            self.traj_roads = torch.stack(self.traj_roads, dim=0)           # (B, L_max, 2)
+            self.traj_roads = torch.stack(self.match_roads, dim=0)           # (B, L_max, 2)
             self.percent_times = torch.stack(self.percent_times, dim=0)     # (B, L_max, 1)
 
-            self.traj_lens = dataset["traj_len"][start:end]                # (B, )
-            self.road_lens = dataset["road_length"][start:end]           # (B, )
-            self.driver_ids = dataset["driver_id"][start:end]              # (B, )
-            self.start_weekdays = dataset["start_weekday"][start:end]      # (B, )
-            self.start_seconds = dataset["start_time_in_day"][start:end]   # (B, )
-            self.durations = dataset["duration"][start:end]                # (B, )
-
-            self.point_mean = dataset["point_mean"].to(DEVICE)             # (1, 2)
-            self.point_std = dataset["point_std"].to(DEVICE)               # (1, 2)
-            self.driver_count = dataset["driver_count"].to(DEVICE)         # torch.int32
-
-        self.n_samples = len(self.trajs)
 
     @staticmethod
     def guessTraj(traj, times, query_mask):
@@ -130,7 +147,7 @@ class DidiDataset(JimmyDataset):
         return {
             "traj": trajs,  # (B, L, 2)
             "road": self.traj_roads[indices].to(DEVICE),    # (B, L, 2)
-            "percent_time": percent_times,  # (B, L)
+            "%time": percent_times,  # (B, L)
             "traj_guess": trajs_guess,  # (B, L)
             "query_mask": query_mask,   # (B, L)
             "traj_len": traj_lens,      # (B, )
@@ -140,11 +157,11 @@ class DidiDataset(JimmyDataset):
             "observe_size": traj_lens - n_erased,   # (B, )
             "driver_id": self.driver_ids[indices].to(DEVICE),           # (B, )
             "start_weekday": self.start_weekdays[indices].to(DEVICE),   # (B, )
-            "start_seconds": self.start_seconds[indices].to(DEVICE),    # (B, )
+            "start_second": self.start_seconds[indices].to(DEVICE),    # (B, )
             "duration": self.durations[indices].to(DEVICE),             # (B, )
             "point_mean": self.point_mean,      # (1, 2)
             "point_std": self.point_std,        # (1, 2)
-            "driver_count": self.driver_count,  # torch.int32
+            "driver_count": self.driver_count,  # python int
         }
 
 
@@ -159,7 +176,7 @@ class DidiXianNovDataset(DidiDataset):
                  shuffle: bool = False,
                  ):
         super().__init__(
-            load_path="/homt/jimmy/Data/Didi/Xian_processed.pt",
+            load_path="/home/jimmy/Data/Didi/Xian_processed.pt",
             pad_to_len=pad_to_len,
             min_erase_rate=min_erase_rate,
             max_erase_rate=max_erase_rate,
