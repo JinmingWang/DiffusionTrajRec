@@ -182,4 +182,4 @@ Temp
 Models/*
 
 !Models/__init__.py
-!Models/TrajWeaver
+!Models/TrajWeaver*

@@ -23,6 +23,10 @@ processed_dataset = {
         "point_mean": None,         # mean of points in trajectory (1, 2) fp32
         "point_std": None,          # std of points in trajectory (1, 2) fp32
         "driver_count": 0,          # number of drivers int32
+        "total_distance": [],       # total distance of the trajectory (1,) fp32
+        "avg_distance": [],         # average distance between consecutive points (1,) fp32
+        "start_pos": [],            # start position of the trajectory (1, 2) fp32
+        "end_pos": []               # end position of the trajectory (1, 2) fp32
     }
 """
 
@@ -62,6 +66,12 @@ class DidiDataset(JimmyDataset):
             self.start_weekdays = dataset["start_weekday"]
             self.start_seconds = dataset["start_second"]
             self.durations = dataset["duration"]
+
+            # --- Float Features ---
+            self.total_distance = dataset["total_distance"]
+            self.avg_distance = dataset["avg_distance"]
+            self.start_pos = dataset["stat_pos"]
+            self.end_pos = dataset["end_pos"]
 
             # --- Constant Features ---
             self.point_mean = dataset["point_mean"].to(DEVICE)  # (1, 2)
@@ -162,11 +172,16 @@ class DidiDataset(JimmyDataset):
             "point_mean": self.point_mean,      # (1, 2)
             "point_std": self.point_std,        # (1, 2)
             "driver_count": self.driver_count,  # python int
+            "total_distance": self.total_distance[indices].to(DEVICE),
+            "avg_distance": self.avg_distance[indices].to(DEVICE),
+            "start_pos": self.start_pos[indices].to(DEVICE),
+            "end_pos": self.end_pos[indices].to(DEVICE)
         }
 
 
 class DidiXianNovDataset(DidiDataset):
     def __init__(self,
+                 dataset_root: str,
                  pad_to_len: int,
                  min_erase_rate: float,
                  max_erase_rate: float,
@@ -176,7 +191,8 @@ class DidiXianNovDataset(DidiDataset):
                  shuffle: bool = False,
                  ):
         super().__init__(
-            load_path="/home/jimmy/Data/Didi/Xian_processed.pt",
+            dataset_root=dataset_root,
+            city_name="Xian",
             pad_to_len=pad_to_len,
             min_erase_rate=min_erase_rate,
             max_erase_rate=max_erase_rate,
@@ -189,6 +205,7 @@ class DidiXianNovDataset(DidiDataset):
 
 class DidiChengduNovDataset(DidiDataset):
     def __init__(self,
+                 dataset_root: str,
                  pad_to_len: int,
                  min_erase_rate: float,
                  max_erase_rate: float,
@@ -198,7 +215,8 @@ class DidiChengduNovDataset(DidiDataset):
                  shuffle: bool = False,
                  ):
         super().__init__(
-            load_path="/home/jimmy/Data/Didi/Chengdu_processed.pt",
+            dataset_root=dataset_root,
+            city_name="Xian",
             pad_to_len=pad_to_len,
             min_erase_rate=min_erase_rate,
             max_erase_rate=max_erase_rate,

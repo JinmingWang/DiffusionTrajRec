@@ -3,6 +3,11 @@ from .DidiDataset import DidiDataset
 
 
 class StatePropDidiDataset():
+
+    data_keys = ["traj", "road", "percent_time", "traj_guess", "query_mask", "traj_len", "road_len",
+                    "erase_rate", "query_size", "observe_size", "driver_id", "start_weekday", "start_seconds",
+                    "duration", "total_distance", "avg_distance", "start_pos", "end_pos"]
+
     def __init__(self,
                  ddm: Union["DDPM", "DDIM"],
                  state_shapes: List[tuple[int]],
@@ -97,9 +102,7 @@ class StatePropDidiDataset():
         for i in range(len(self.cache["s_t+1:T"])):
             self.cache["s_t+1:T"][i][place_at] = torch.zeros_like(self.cache["s_t+1:T"][i][place_at])
 
-        for key in ["traj", "road", "percent_time", "traj_guess", "query_mask", "traj_len", "road_len",
-                    "erase_rate", "query_size", "observe_size", "driver_id", "start_weekday", "start_seconds",
-                    "duration"]:
+        for key in self.data_keys:
             self.cache[key][place_at] = data_dict[key][0]
         # point_mean, point_std and driver_count are constant
 
@@ -147,9 +150,7 @@ class StatePropDidiDataset():
             "s_t+1": [each.clone() for each in self.cache["s_t+1:T"]],  # n_features * (B, *feature_dims)
         }
 
-        for key in ["road", "percent_time", "traj_guess", "query_mask", "traj_len", "road_len",
-                    "erase_rate", "query_size", "observe_size", "driver_id", "start_weekday", "start_seconds",
-                    "duration"]:
+        for key in self.data_keys[1:]:
             batch[key] = self.cache[key].clone()
 
         # Update time steps, if any of them reach the end
