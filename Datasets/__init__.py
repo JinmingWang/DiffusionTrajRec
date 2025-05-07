@@ -1,1 +1,2 @@
-from .DidiDataset import DidiDataset
+from .DidiDataset import DidiDataset, DidiXianNovDataset, DidiChengduNovDataset
+from .StatePropDidiDataset import StatePropDidiDataset

@@ -1,3 +1,4 @@
+from .TrajWeaverOld import *
 from .TrajWeaver import *
 from .AttnMove import *
 from .DeepMove import *

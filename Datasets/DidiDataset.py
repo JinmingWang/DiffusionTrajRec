@@ -56,7 +56,7 @@ class DidiDataset(JimmyDataset):
 
             # --- Sequential Features ---
             self.trajs = dataset["traj"]
-            self.match_roads = dataset["match_road"]  # B * (L_road[b], 2)
+            self.match_roads = dataset["match_road"]  # B * (L_traj[b], 2)
             self.percent_times = dataset["%time"]  # B * (L_traj[b], )
 
             # --- Integer Features ---
@@ -70,7 +70,7 @@ class DidiDataset(JimmyDataset):
             # --- Float Features ---
             self.total_distance = dataset["total_distance"]
             self.avg_distance = dataset["avg_distance"]
-            self.start_pos = dataset["stat_pos"]
+            self.start_pos = dataset["start_pos"]
             self.end_pos = dataset["end_pos"]
 
             # --- Constant Features ---
