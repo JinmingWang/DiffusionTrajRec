@@ -91,7 +91,7 @@ class DidiDataset(JimmyDataset):
                 self.match_roads[b] = interpTraj(self.match_roads[b], self.pad_to_len, mode="linear")
 
             self.trajs = torch.stack(self.trajs, dim=0)                     # (B, L_max, 2)
-            self.traj_roads = torch.stack(self.match_roads, dim=0)           # (B, L_max, 2)
+            self.match_roads = torch.stack(self.match_roads, dim=0)           # (B, L_max, 2)
             self.percent_times = torch.stack(self.percent_times, dim=0)     # (B, L_max, 1)
 
 
@@ -108,8 +108,8 @@ class DidiDataset(JimmyDataset):
 
         # query_subtraj = traj[boolean_mask]  # (L_erased, 2)
         observ_subtraj = traj[~boolean_mask]  # (L_remain, 2)
-        query_times = times[boolean_mask]
-        observ_times = times[~boolean_mask]
+        query_times = times.flatten()[boolean_mask]
+        observ_times = times.flatten()[~boolean_mask]
 
         ids_right = torch.searchsorted(observ_times, query_times).to(torch.long)  # (L_erased)
         ids_left = ids_right - 1  # (L_erased)
@@ -142,7 +142,7 @@ class DidiDataset(JimmyDataset):
         percent_times = self.percent_times[indices].to(DEVICE)
         traj_lens = self.traj_lens[indices].to(DEVICE)
 
-        erase_rates = torch.rand(B) * (self.max_erase_rate - self.min_erase_rate) + self.min_erase_rate
+        erase_rates = torch.rand(B, device=DEVICE) * (self.max_erase_rate - self.min_erase_rate) + self.min_erase_rate
         # Compute the number of points to erase for each trajectory
         n_erased = (traj_lens * erase_rates).to(torch.long)
         trajs_guess = torch.zeros_like(trajs)
@@ -151,12 +151,12 @@ class DidiDataset(JimmyDataset):
             erase_indices = torch.randperm(traj_lens[b])[:n_erased[b]]
             query_mask[b, erase_indices] = 1.0      # 1 for erased
             query_mask[b, traj_lens[b]:] = -1.0     # -1 for padding
-            query_mask[b, [0, traj_lens[b]]] = 0.0           # never erase the first and last point
+            query_mask[b, [0, traj_lens[b] - 1]] = 0.0           # never erase the first and last point
             trajs_guess[b] = DidiDataset.guessTraj(trajs[b], percent_times[b], query_mask[b])
 
         return {
             "traj": trajs,  # (B, L, 2)
-            "road": self.traj_roads[indices].to(DEVICE),    # (B, L, 2)
+            "road": self.match_roads[indices].to(DEVICE),    # (B, L, 2)
             "%time": percent_times,  # (B, L)
             "traj_guess": trajs_guess,  # (B, L)
             "query_mask": query_mask,   # (B, L)

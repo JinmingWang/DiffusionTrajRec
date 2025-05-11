@@ -4,7 +4,7 @@ from .DidiDataset import DidiDataset
 
 class StatePropDidiDataset():
 
-    data_keys = ["traj", "road", "percent_time", "traj_guess", "query_mask", "traj_len", "road_len",
+    data_keys = ["traj", "road", "%time", "traj_guess", "query_mask", "traj_len", "road_len",
                     "erase_rate", "query_size", "observe_size", "driver_id", "start_weekday", "start_seconds",
                     "duration", "total_distance", "avg_distance", "start_pos", "end_pos"]
 
@@ -12,7 +12,8 @@ class StatePropDidiDataset():
                  ddm: Union["DDPM", "DDIM"],
                  state_shapes: List[tuple[int]],
                  t_distribution: Literal['same', 'stride', 'uniform'],
-                 load_path: str,
+                 dataset_root: str,
+                 city_name: str,
                  pad_to_len: int,
                  min_erase_rate: float,
                  max_erase_rate: float,
@@ -30,14 +31,16 @@ class StatePropDidiDataset():
         self.batch_size = batch_size
         self.drop_last = drop_last
         self.shuffle = shuffle
-        self.load_path = load_path
+        self.dataset_root = dataset_root
+        self.city_name = city_name
         self.T = ddm.T
         self.state_shapes = state_shapes
         self.t_distribution = t_distribution
 
         # Try load a batch of data, so we can initialize a cache
         dummy_dataset = DidiDataset(
-            load_path=load_path,
+            dataset_root,
+            city_name,
             pad_to_len=pad_to_len,
             min_erase_rate=min_erase_rate,
             max_erase_rate=max_erase_rate,
@@ -51,7 +54,8 @@ class StatePropDidiDataset():
 
         # The actual dataset has batch_size = 1, so we can load data one by one
         self.dataset = DidiDataset(
-            load_path=load_path,
+            dataset_root,
+            city_name,
             pad_to_len=pad_to_len,
             min_erase_rate=min_erase_rate,
             max_erase_rate=max_erase_rate,
@@ -64,7 +68,7 @@ class StatePropDidiDataset():
         # [T, T-s, T-2s, ..., k], k >= 0
         self.t_schedule = list(range(self.T - 1, 0, -self.skip_step))
         if self.t_schedule[-1] != 0:
-            self.t_schedule.extend(list(range(self.t_schedule[-1] - 1, -1, -1)))
+            self.t_schedule.append(0)
         # [T, T-s, T-2s, ..., k, k-1, ..., 0] if k > 0
         self.t_schedule = torch.tensor(self.t_schedule, dtype=torch.int32, device=DEVICE)
         self.diff_steps = len(self.t_schedule)
