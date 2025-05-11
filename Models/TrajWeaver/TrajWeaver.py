@@ -1,5 +1,7 @@
-from .components import *
+from .DenoingUNet import DenoisingUNet
 from .Embedder import MixedCondEmbedder
+from .StatePropagator import MultiLevelStagePropagator
+from JimmyTorch.Models import *
 
 """
 Total Training Params:                                                  23.26 M 
@@ -8,86 +10,209 @@ fwd FLOPs:                                                              3.04 GFL
 fwd+bwd MACs:                                                           4.55 GMACs
 fwd+bwd FLOPs:                                                          9.13 GFLOPS
 """
-class TrajWeaver(nn.Module):
+
+
+class TrajWeaver(JimmyModel):
     def __init__(self,
+                 ddm: Any,
                  d_in: int,
                  d_out: int,
+                 d_state: int,
                  d_list: list[int],
                  d_embed: int,
+                 l_traj: int,
                  n_heads: int,
-                 embedder: nn.Module,
-                 dropout: float,
-                 ):
-        super().__init__()
+                 optimizer_cls=None,
+                 optimizer_args=None,
+                 mixed_precision: bool = False,
+                 clip_grad: float = 0.0):
 
-        self.d_list = d_list
-        self.n_stages = len(d_list) - 1
-
-        self.embedder = embedder
-
-        self.stem = nn.Sequential(  # (B, L, d_in)
-            Transpose(1, 2),
-            Conv1DGnSiLU(d_in, d_list[0], k=3, s=1, p=1, gn_groups=8),
-            nn.Conv1d(d_list[0], d_list[0], 3, 1, 1)
+        super().__init__(
+            optimizer_cls=optimizer_cls,
+            optimizer_args=optimizer_args,
+            mixed_precision=mixed_precision,
+            clip_grad=clip_grad
         )
+        self.ddm = ddm
 
-        self.down_blocks = nn.ModuleList()
-        for i in range(self.n_stages):
-            self.down_blocks.append(TrajWeaverBlock(
-                d_list[i], d_list[i], d_embed, d_list[i] * 2, d_list[i+1], 
-                n_heads, dropout, scaling="down"))
-            
-        self.mid_block = TrajWeaverBlock(
-            d_list[-1], d_list[-1], d_embed, d_list[-1] * 2, d_list[-1],
-            n_heads, dropout, scaling="same"
-        )
+        # The conditional feature embedder module
+        self.embedder = MixedCondEmbedder(d_embed)
+        self.embedder.addVector("start_pos", 2, 16)
+        self.embedder.addVector("end_pos", 2, 16)
+        self.embedder.addVector("avg_mov_dist", 1, 16)
+        self.embedder.addCategorical("weekday", 7, 16)
+        self.embedder.addCategorical("start_minute", 24 * 60, 64)
+        self.embedder.addCategorical("traj_len", 513, 64)
 
-        self.merge_blocks = nn.ModuleList()
-        self.up_blocks = nn.ModuleList()
-        for i in range(self.n_stages, 0, -1):
-            self.merge_blocks.append(
-                GnSiLUConv1D(d_list[i]*2, d_list[i], 3, 1, 1)
+        # The denoising UNet module
+        self.denoising_unet = DenoisingUNet(d_in=d_in, d_out=d_out, d_state=d_state, d_list=d_list)
+
+        # Initialize the state features
+        state_shapes = self.denoising_unet.getStateShapes(l_traj)
+        self.initial_state = nn.ParameterList([
+            nn.Parameter(torch.randn(shape)) for shape in state_shapes
+        ])
+
+        # The state propagator module
+        self.state_propagator = MultiLevelStagePropagator(d_state, d_embed, n_heads)
+
+        self.train_loss_names = ["Train_MSE(0:t+1)", "Train_MSE(0:t)", "Train_MSE(total)"]
+        self.eval_loss_names = ["Eval_MSE_REC"]
+        self.mse_func = nn.MSELoss()
+
+
+    def setInitialState(self, ddm_t: Tensor, state_features: List[Tensor]) -> List[Tensor]:
+        indices = torch.where(ddm_t == self.ddm.T - 1)[0]
+        for b in indices:
+            # If a data sample has ddm_t = ddm.T - 1, which means it is the last step of the diffusion process,
+            # that is, the first denoising step, then its state features are all initialized to 0
+            # Here we need to set the state features to the initial state
+            for i in range(len(state_features)):
+                state_features[i][b] = state_features[i][b] + self.initial_state[i]
+        return state_features
+
+
+    def forward(self,
+                noisy_input: Tensor,
+                ddm_t: Tensor,
+                state_features: List[Tensor],
+                **kw_cond: Any) -> Tuple[Tensor, Tensor]:
+        """
+        :param noisy_input: The noisy input of shape (B, l_traj, d_in)
+        :param ddm_t: The time step of the diffusion model (B, )
+        :param state_features: The state features, each state feature is a tensor of shape (B, l_feature, d_state)
+        :param kw_cond: The conditional features, each feature has been registered in the embedder
+        :return: The predicted noise of shape (B, l_traj, d_out), and the new state features
+        """
+        state_features = self.setInitialState(ddm_t, state_features)
+        # Embed the conditional features
+        cond_embed = self.embedder(**kw_cond)
+        # Propagate the state features
+        state_features = self.state_propagator(state_features, cond_embed)
+        # Pass the noisy input and state features through the UNet
+        noise_pred, new_state_features = self.denoising_unet(noisy_input, state_features)
+        # Return the predicted noise
+        return noise_pred, new_state_features
+
+
+    def __prepareInputs(self, data_dict: dict[str, Any]) -> dict[str, Any]:
+        concat_keys = ["road", "%time", "traj_guess", "query_mask"]
+        concat_features = torch.cat([data_dict[k] for k in concat_keys], dim=2)  # (B, L, 6)
+        data_dict["inputs_t+1"] = torch.cat([data_dict["traj_t+1"], concat_features], dim=2)  # (B, L, 8)
+        data_dict["inputs_t"] = torch.cat([data_dict["traj_t"], concat_features], dim=2)  # (B, L, 8)
+        return data_dict
+
+
+    def trainStep(self, data_dict) -> (dict[str, Any], dict[str, Any]):
+        device = data_dict['traj'].device
+
+        data_dict = self.__prepareInputs(data_dict)
+
+        if self.mixed_precision:
+            # Automatic Mixed Precision (AMP) forward pass and loss calculation
+            with torch.autocast(device_type=device, dtype=torch.float16):
+                pred_eps_0_to_tp1, state_features = self.denoising_unet(
+                    data_dict['inputs_t+1'],
+                    data_dict['t+1'],
+                    data_dict['s_t+1'],
+                    **data_dict
+                )
+
+                pred_eps_0_to_t, _ = self.denoising_unet(
+                    data_dict['inputs_t'],
+                    data_dict['t'],
+                    state_features,
+                    **data_dict
+                )
+
+                loss_0_to_tp1 = self.mse_fn(pred_eps_0_to_tp1, data_dict['eps_0:t+1'])
+                loss_0_to_t = self.mse_fn(pred_eps_0_to_t, data_dict['eps_0:t'])
+                loss = loss_0_to_tp1 + loss_0_to_t
+
+            # Backward pass with AMP
+            self.scaler.scale(loss).backward()
+
+            # Gradient clipping with AMP (if specified)
+            if self.clip_grad > 0:
+                self.scaler.unscale_(self.optimizer)
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+
+            # Optimizer step with AMP
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            # Standard forward pass and backward pass
+            pred_eps_0_to_tp1, state_features = self.denoising_unet(
+                data_dict['traj_t+1'],
+                data_dict['t+1'],
+                data_dict['s_t+1'],
+                **data_dict
             )
 
-            self.up_blocks.append(TrajWeaverBlock(
-                d_list[i], d_list[i], d_embed, d_list[i] * 2, d_list[i - 1],
-                n_heads, dropout, scaling="up"
-            ))
+            pred_eps_0_to_t, _ = self.denoising_unet(
+                data_dict['traj_t'],
+                data_dict['t'],
+                state_features,
+                **data_dict
+            )
 
-        self.head = nn.Sequential(
-            GnSiLUConv1D(d_list[0], d_out, k=3, s=1, p=1),
-            Transpose(1, 2)     # (B,L, d_out)
-        )
+            loss_0_to_tp1 = self.mse_fn(pred_eps_0_to_tp1, data_dict['eps_0:t+1'])
+            loss_0_to_t = self.mse_fn(pred_eps_0_to_t, data_dict['eps_0:t'])
+            loss = loss_0_to_tp1 + loss_0_to_t
 
-    def forward(self, x, ddm_t, h_list, embed=None, **kw_cond):
-        # During eval, the embed is computed only once
-        # so it will be passed as a parameter
-        # if self.training:
-        embed = self.embedder(ddm_t, **kw_cond)
+            loss.backward()
 
-        x = self.stem(x)    # (B, L, d_in) -> (B, d0, L)
+            # Standard gradient clipping (if specified)
+            if self.clip_grad > 0:
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
 
-        x_list = []
-        new_h_list = []
-        for block in self.down_blocks:
-            x, h = block(x, h_list.pop(0), embed)
-            x_list.append(x)
-            new_h_list.append(h)
+            # Optimizer step
+            self.optimizer.step()
 
-        x, h = self.mid_block(x, h_list.pop(0), embed)     # (B, d-1, l)
-        new_h_list.append(h)
+        # Zero the gradients
+        self.optimizer.zero_grad()
 
-        for i, block in enumerate(self.up_blocks):
-            x = self.merge_blocks[i](torch.cat([x, x_list.pop()], dim=1))
-            x, h = block(x, h_list.pop(0), embed)
-            new_h_list.append(h)
+        loss_dict = {
+            "Train_MSE(0:t+1)": loss_0_to_tp1.item(),
+            "Train_MSE(0:t)": loss_0_to_t.item(),
+            "Train_MSE(total)": loss.item()
+        }
 
-        return self.head(x), new_h_list
+        output_dict = {
+            "pred_eps_0_to_tp1": pred_eps_0_to_tp1.detach(),
+            "pred_eps_0_to_t": pred_eps_0_to_t.detach(),
+        }
 
-    def getStateShapes(self, input_len: int):
-        L = input_len
-        down_state_shapes = [(self.d_list[i], L//(2**i)) for i in range(self.n_stages)]
-        mid_state_shape = (self.d_list[-1], L//(2**self.n_stages))
-        up_state_shapes = list(reversed([(self.d_list[i], L//(2**i)) for i in range(1, self.n_stages + 1)]))
-        return down_state_shapes + [mid_state_shape] + up_state_shapes
-        
+        return loss_dict, output_dict
+
+
+    def evalStep(self, data_dict) -> (dict[str, Any], dict[str, Any]):
+        device = data_dict['traj'].device
+        B = data_dict['traj'].shape[0]
+
+        concat_keys = ["road", "%time", "traj_guess", "query_mask"]
+        concat_features = torch.cat([data_dict[k] for k in concat_keys], dim=2)  # (B, L, 6)
+        state_features = [f.repeat(B, 1, 1) for f in self.initial_state]
+
+        with torch.no_grad():
+            cond_embed = self.embedder(**data_dict)
+
+        def predFunc(traj_t, t):
+            nonlocal state_features
+            input_t = torch.cat([traj_t, concat_features], dim=2)
+            noise_pred, state_features = self.denoising_unet(input_t, self.state_propagator(state_features, cond_embed))
+            return None, noise_pred
+
+        with torch.no_grad():
+            traj_T = torch.randn_like(data_dict['traj'], device=device)
+            traj_recon = self.ddm.denoise(traj_T, predFunc)
+
+            mask = data_dict['query_mask'] > 0.5    # (B, L)
+            traj_query_rec = traj_recon[mask]   # (?, ), depends on how many elements are masked
+            traj_query_gt = data_dict['traj'][mask]   # (?, ), depends on how many elements are masked
+
+            loss = self.mse_func(traj_query_rec, traj_query_gt)
+        return {"Eval_MSE_REC": loss.item()}, {"traj_recon": traj_recon.detach()}
+
+
+

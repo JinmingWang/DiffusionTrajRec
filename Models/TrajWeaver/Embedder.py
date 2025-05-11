@@ -1,20 +1,18 @@
 from JimmyTorch.Models import *
 
 class MixedCondEmbedder(nn.Module):
-    def __init__(self, ddm_T: int, t_dim: int, d_embed: int):
+    def __init__(self, d_embed: int):
         super().__init__()
-        self.non_seq_embedders = nn.ModuleDict({
-            "ddm_t": nn.Embedding(ddm_T, t_dim)
-        })
+        self.non_seq_embedders = nn.ModuleDict()
 
         self.seq_embedders = nn.ModuleDict()
 
         self.d_embed = d_embed
-        self.total_non_seq_dim = t_dim
+        self.total_non_seq_dim = 0
         self.total_seq_dim = 0
 
         self.aggregators = nn.ModuleDict({
-            "non_sequential": FCLayers([t_dim, t_dim, d_embed], act=nn.SiLU(inplace=True)),
+            "non_sequential": nn.Identity(),
             "sequential": nn.Identity()
         })
 
@@ -53,16 +51,15 @@ class MixedCondEmbedder(nn.Module):
             act=nn.SiLU(inplace=True)
         )
 
-    def forward(self, ddm_t, **kw_cond):
-        non_seq_embed_list = [self.non_seq_embedders["ddm_t"](ddm_t)]
+    def forward(self, **kw_cond):
+        non_seq_embed_list = []
         seq_embed_list = []
-        for key, data in kw_cond.items():
-            if key in self.non_seq_embedders:
-                non_seq_embed_list.append(self.non_seq_embedders[key](data))
-            elif key in self.seq_embedders:
-                seq_embed_list.append(self.seq_embedders[key](data))
-            else:
-                raise KeyError(f"Condition of name {key} is not registered in {self.__class__.__name__}")
+
+        for key in self.non_seq_embedders.keys():
+            non_seq_embed_list.append(self.non_seq_embedders[key](kw_cond[key]))
+
+        for key in self.seq_embedders.keys():
+            seq_embed_list.append(self.seq_embedders[key](non_seq_embed_list[-1]))
         
         non_seq_embed = self.aggregators["non_sequential"](torch.cat(non_seq_embed_list, dim=-1))
 
