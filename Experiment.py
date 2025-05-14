@@ -60,7 +60,7 @@ class Experiment:
 
         # Other constants for the experiment.
         self.constants = {
-            "n_epochs": 500,
+            "n_epochs": 100,
             "moving_avg": 1000,
             "compile_model": False,
             "eval_interval": 1,
