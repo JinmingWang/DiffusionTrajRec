@@ -23,7 +23,6 @@ class Trainer:
                  save_dir: str,
                  n_epochs: int,
                  moving_avg: int,
-                 compile_model: bool,
                  eval_interval: int) -> None:
         """
         Initialize the trainer with a dataset, model, optimizer, and comments.
@@ -36,17 +35,12 @@ class Trainer:
         :param save_dir: A string specifying the directory where the model checkpoints will be saved.
         :param moving_avg: An integer specifying the window size for calculating the moving average of the loss. Default is 100.
         :param mixed_precision: A boolean indicating whether to use mixed precision training. Default is False.
-        :param compile_model: A boolean indicating whether to use `torch.compile` to optimize the model. Default is False.
         :param clip_grad: A float specifying the maximum gradient norm for gradient clipping. Default is 0.0 (no clipping).
         """
 
         self.train_set = train_set
         self.eval_set = eval_set
-        if compile_model:
-            self.model: JimmyModel = torch.compile(model)
-        else:
-            self.model: JimmyModel = model
-        self.compile_model = compile_model
+        self.model = model
 
         if not hasattr(lr_scheduler, 'update'):
             # get number of arguments of lr_scheduler.step()
@@ -109,7 +103,8 @@ class Trainer:
                 eval_loss = eval_losses["Eval_MSE"]
                 if eval_loss < best_loss:
                     best_loss = eval_loss
-                    saveModels(os.path.join(self.save_dir, "best.pth"), model=self.model)
+                    self.model.saveTo(os.path.join(self.save_dir, "best.pth"))
+                self.model.saveTo(os.path.join(self.save_dir, "last.pth"))
 
         pm.close()
 

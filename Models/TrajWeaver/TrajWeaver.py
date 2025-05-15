@@ -22,17 +22,9 @@ class TrajWeaver(JimmyModel):
                  d_embed: int,
                  l_traj: int,
                  n_heads: int,
-                 optimizer_cls=None,
-                 optimizer_args=None,
-                 mixed_precision: bool = False,
-                 clip_grad: float = 0.0):
+                 **JM_kwargs):
 
-        super().__init__(
-            optimizer_cls=optimizer_cls,
-            optimizer_args=optimizer_args,
-            mixed_precision=mixed_precision,
-            clip_grad=clip_grad
-        )
+        super().__init__(**JM_kwargs)
         self.ddm = ddm
 
         # The conditional feature embedder module

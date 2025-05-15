@@ -5,6 +5,7 @@ from Datasets import DidiXianNovDataset, DidiChengduNovDataset
 from JimmyTorch.Datasets import DEVICE
 from JimmyTorch.Training import *
 from JimmyTorch.Models import JimmyModel
+from JimmyTorch.DynamicConfig import DynamicConfig
 import torch
 from typing import *
 from datetime import datetime
@@ -23,46 +24,36 @@ class Experiment:
     def __init__(self, comments: str):
         self.comments = comments
 
-        self.model_cfg: dict[str, Any] = {
-            "class": JimmyModel,
-            "args": {
-                "optimizer_cls": torch.optim.AdamW,
-                "optimizer_args": {"lr": 2e-4},
-                "mixed_precision": True,
-                "clip_grad": 0.0,
-            }
-        }
+        self.model_cfg = DynamicConfig(JimmyModel,
+                                       optimizer_cls=torch.optim.AdamW,
+                                       optimizer_args={"lr": 2e-4},
+                                       mixed_precision=True,
+                                       compile_model=False,
+                                       clip_grad=0.0)
 
-        self.dataset_cfg: dict[str, Any] = {
-            "class": DidiXianNovDataset,
-            "args": {
-                "dataset_root": "/home/jimmy/Data/Didi/",
-                "pad_to_len": 512,
-                "min_erase_rate": 0.1,
-                "max_erase_rate": 0.9,
-                "batch_size": 64,
-                "drop_last": True,
-                "shuffle": True}
-        }
+        self.dataset_cfg = DynamicConfig(DidiXianNovDataset,
+                                        dataset_root="/home/jimmy/Data/Didi/",
+                                        pad_to_len=512,
+                                        min_erase_rate=0.1,
+                                        max_erase_rate=0.9,
+                                        batch_size=64,
+                                        drop_last=True,
+                                        shuffle=True)
+
 
         # The default hyperparameters for the experiment.
-        self.lr_scheduler_cfg: dict[str, Any] = {
-            "class": ReduceLROnPlateau,
-            "args": {
-                "mode": "min",
-                "factor": 0.5,
-                "patience": 10,
-                "threshold": 0.01,
-                "min_lr": 1e-6,
-                "verbose": False,
-            },
-        }
+        self.lr_scheduler_cfg = DynamicConfig(ReduceLROnPlateau,
+                                            mode="min",
+                                            factor=0.5,
+                                            patience=10,
+                                            threshold=0.01,
+                                            min_lr=1e-6,
+                                            verbose=False)
 
         # Other constants for the experiment.
         self.constants = {
-            "n_epochs": 100,
+            "n_epochs": 200,
             "moving_avg": 1000,
-            "compile_model": False,
             "eval_interval": 1,
         }
 
@@ -79,7 +70,7 @@ class Experiment:
         return self.__str__()
 
 
-    def start(self) -> Trainer:
+    def start(self, checkpoint: str = None) -> Trainer:
         """
         Start the experiment with the given comments.
         :param comments: Comments to be added to the Experiment.
@@ -87,11 +78,19 @@ class Experiment:
         """
         rprint(f"[#00ff00]--- Start Experiment \"{self.comments}\" ---[/#00ff00]")
 
-        train_set = self.dataset_cfg["class"](set_name="train", **self.dataset_cfg["args"])
-        eval_set = self.dataset_cfg["class"](set_name="eval", **self.dataset_cfg["args"])
-        model = self.model_cfg["class"](**self.model_cfg["args"]).to(DEVICE)
-        model.initOptimizer()
-        lr_scheduler = self.lr_scheduler_cfg["class"](model.optimizer, **self.lr_scheduler_cfg["args"])
+        self.dataset_cfg.set_name = "train"
+        train_set = self.dataset_cfg.build()
+        self.dataset_cfg.set_name = "eval"
+        eval_set = self.dataset_cfg.build()
+
+        model = self.model_cfg.build().to(DEVICE)
+
+        if checkpoint is not None:
+            model.loadFrom(checkpoint)
+
+        model.initialize()
+        self.lr_scheduler_cfg.optimizer = model.optimizer
+        lr_scheduler = self.lr_scheduler_cfg.build()
 
         trainer_kwargs = {"train_set": train_set, "eval_set": eval_set, "model": model, "lr_scheduler": lr_scheduler}
         trainer_kwargs.update(self.constants)
@@ -123,7 +122,9 @@ class Experiment:
         trainer.start()
 
         rprint(f"[blue]Training done. Start testing.[/blue]")
-        test_set = self.dataset_cfg["class"](set_name="test", **self.dataset_cfg["args"])
+        self.dataset_cfg.set_name = "test"
+        self.dataset_cfg.batch_size = 1
+        test_set = self.dataset_cfg.build()
         test_losses = trainer.evaluate(test_set, compute_avg=False)
 
         test_report = pd.DataFrame.from_dict(test_losses)
