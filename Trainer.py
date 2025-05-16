@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from Datasets import *
-from JimmyTorch.Datasets import MultiThreadLoader, DEVICE
+from JimmyTorch.Datasets import MultiThreadLoader, DEVICE, plotTraj
 from JimmyTorch.Training import *
 from JimmyTorch.Models import JimmyModel
 from datetime import datetime
@@ -9,6 +9,7 @@ import os
 from rich import print as rprint
 from typing import Dict, Any
 import inspect
+import matplotlib.pyplot as plt
 
 
 class Trainer:
@@ -69,6 +70,7 @@ class Trainer:
         # Initialize progress manager and tensorboard manager
         pm = ProgressManager(self.train_set.n_batches, self.n_epochs, 5, 2, custom_fields=pm_log_tags)
         tm = TensorBoardManager(self.log_dir, tags=tm_log_tags, value_types=["scalar"] * len(tm_log_tags))
+        tm.register("Visualization", "figure")
         ma_losses = {name: MovingAvg(self.moving_avg) for name in self.model.train_loss_names}
 
         best_loss = float('inf')
@@ -94,7 +96,7 @@ class Trainer:
             self.lr_scheduler.update(loss_dict["Train_MSE"])
 
             if epoch % self.eval_interval == 0:
-                eval_losses = self.evaluate(self.eval_set)
+                eval_losses = self.evaluate(self.eval_set, pm=pm, tm=tm)
 
                 # 更新tensorboard
                 tm.log(pm.overall_progress, **eval_losses)
@@ -109,7 +111,11 @@ class Trainer:
         pm.close()
 
 
-    def evaluate(self, dataset: DidiDataset, compute_avg: bool=True):
+    def evaluate(self,
+                 dataset: DidiDataset,
+                 compute_avg: bool=True,
+                 pm: ProgressManager = None,
+                 tm: TensorBoardManager = None) -> Dict[str, Any]:
         n_batches = dataset.n_batches
         eval_losses = {name: torch.zeros(n_batches).to(DEVICE) for name in self.model.eval_loss_names}
         self.model.eval()
@@ -119,6 +125,17 @@ class Trainer:
 
             for name in self.model.eval_loss_names:
                 eval_losses[name][i] = loss_dict[name]
+
+        if tm is not None:
+            traj_recon = output_dict["output"]
+            traj_gt = data_dict["traj"]
+            traj_lens = data_dict["traj_len"]
+            fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+            ax[0].set_title("Ground Truth")
+            ax[1].set_title("Reconstructed Trajectory")
+            plotTraj(ax[0], traj_gt, traj_lens, color="blue", linewidth=1, markersize=1)
+            plotTraj(ax[1], traj_recon, traj_lens, color="red", linewidth=1, markersize=1)
+            tm.log(pm.overall_progress, Visualization=fig)
 
         self.model.train()
 

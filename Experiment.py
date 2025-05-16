@@ -26,7 +26,7 @@ class Experiment:
 
         self.model_cfg = DynamicConfig(JimmyModel,
                                        optimizer_cls=torch.optim.AdamW,
-                                       optimizer_args={"lr": 2e-4},
+                                       optimizer_args={"lr": 2e-4, "amsgrad": True},
                                        mixed_precision=True,
                                        compile_model=False,
                                        clip_grad=0.0)

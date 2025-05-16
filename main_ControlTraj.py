@@ -21,7 +21,7 @@ if __name__ == '__main__':
     # experiment.dataset_cfg.batch_size = 256
     # experiment.start()
 
-    experiment = Experiment("First Try To Train GeoUNet")
+    experiment = Experiment("之前的Attribute Embedder里数值太大了，不稳定，且错误地使用了加噪声后的轨迹来计算轨迹长度/平均速度等特征，导致NaN Loss，已修改。加载之前最好的模型继续训练。无视改模块后变化的parameter。")
     road_mae = RoadMAE(0.0, 8, 4, 8, 4, 256, 128, 512).to(DEVICE)
     loadModels("Runs/DidiXianNovDataset/RoadMAE/250514_062607/best.pth", model=road_mae)
     # road_mae.loadFrom("Runs/DidiXianNovDataset/RoadMAE/250514_062607/best.pth")
@@ -41,7 +41,9 @@ if __name__ == '__main__':
     )
 
     experiment.dataset_cfg.batch_size = 256
-    experiment.constants.eval_interval = 5
+    experiment.constants["eval_interval"] = 2
+    #
+    # experiment.model_cfg.optimizer_args["lr"] = 1e-4
 
-    experiment.start()
+    experiment.start(checkpoint="Runs/DidiXianNovDataset/GeoUNet/250515_020813/best.pth")
 

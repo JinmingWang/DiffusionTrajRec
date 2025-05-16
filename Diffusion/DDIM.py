@@ -133,8 +133,8 @@ class DDIM:
         # [T, T-s, T-2s, ..., k], k >= 0
         t_schedule = list(range(self.T - 1, 0, -self.skip_step))
         if t_schedule[-1] != 0:
-            t_schedule.extend(list(range(t_schedule[-1] - 1, -1, -1)))
-        # [T, T-s, T-2s, ..., k, k-1, ..., 0] if k > 0
+            t_schedule.append(0)
+        # [T, T-s, T-2s, ..., 0]
 
         pbar = tqdm(t_schedule) if verbose else t_schedule
         for ti, t in enumerate(pbar):
