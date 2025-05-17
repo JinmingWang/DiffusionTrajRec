@@ -74,7 +74,7 @@ class Experiment:
         """
         Start the experiment with the given comments.
         :param comments: Comments to be added to the Experiment.
-        :return: A `JimmyTrainer` object with amost everything during a training session.
+        :return: A `JimmyTrainer` object with almost everything during a training session.
         """
         rprint(f"[#00ff00]--- Start Experiment \"{self.comments}\" ---[/#00ff00]")
 
@@ -84,11 +84,11 @@ class Experiment:
         eval_set = self.dataset_cfg.build()
 
         model = self.model_cfg.build().to(DEVICE)
+        model.initialize()
 
         if checkpoint is not None:
             model.loadFrom(checkpoint)
 
-        model.initialize()
         self.lr_scheduler_cfg.optimizer = model.optimizer
         lr_scheduler = self.lr_scheduler_cfg.build()
 
