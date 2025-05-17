@@ -21,7 +21,6 @@ class DDIM:
         skip_step (int): Number of steps to skip during denoising.
     """
     def __init__(self,
-                 sample_shape: list[int],
                  min_beta: float = 0.0001,
                  max_beta: float = 0.002,
                  max_diffusion_step: int = 100,
@@ -48,7 +47,6 @@ class DDIM:
 
         self.skip_step = skip_step
         self.device = device
-        self.sample_shape = sample_shape
 
         alphas = 1 - betas
         alpha_bars = torch.empty_like(alphas)
@@ -58,13 +56,12 @@ class DDIM:
             alpha_bars[i] = product
         self.T = max_diffusion_step
 
-        self.expand_shape = [-1] + [1] * len(sample_shape)
-        # Shapes: (T, 1, 1) for 2D data, (T, 1, 1, 1) for 3D data
-        self.beta = betas.view(*self.expand_shape)
-        self.alpha = alphas.view(*self.expand_shape)
-        self.αbar = alpha_bars.view(*self.expand_shape)
-        self.sqrt_αbar = torch.sqrt(alpha_bars).view(*self.expand_shape)
-        self.sqrt_1_m_αbar = torch.sqrt(1 - alpha_bars).view(*self.expand_shape)
+        # Shapes: (T,)
+        self.beta = betas.view(-1, 1)
+        self.alpha = alphas.view(-1, 1)
+        self.αbar = alpha_bars.view(-1, 1)
+        self.sqrt_αbar = torch.sqrt(alpha_bars).view(-1, 1)
+        self.sqrt_1_m_αbar = torch.sqrt(1 - alpha_bars).view(-1, 1)
 
 
     def diffuseStep(self, x_t: Tensor, t: int, epsilon_t_to_tp1: Tensor) -> Tensor:
@@ -88,8 +85,9 @@ class DDIM:
         :param epsilon: Noise to be added.
         :return: The diffused sample at time step t.
         """
-        x_t = self.sqrt_αbar[t] * x_0 + self.sqrt_1_m_αbar[t] * epsilon
-        return x_t
+        original_shape = x_0.shape
+        x_t = self.sqrt_αbar[t] * x_0.flatten(1) + self.sqrt_1_m_αbar[t] * epsilon.flatten(1)
+        return x_t.view(*original_shape)
 
 
     def denoiseStep(self, x0_pred: Tensor, epsilon_pred: Tensor, x_tp1: Tensor, t: Tensor, next_t: Tensor) -> Tensor:
@@ -103,13 +101,17 @@ class DDIM:
         :param next_t: Next time step.
         :return: The denoised sample at the next time step.
         """
+        original_shape = epsilon_pred.shape
         if x0_pred is None:
-            x0_pred = (x_tp1 - self.sqrt_1_m_αbar[t] * epsilon_pred) / self.sqrt_αbar[t]
+            x0_pred = (x_tp1.flatten(1) - self.sqrt_1_m_αbar[t] * epsilon_pred.flatten(1)) / self.sqrt_αbar[t]
+        else:
+            x0_pred = x0_pred.flatten(1)
+        epsilon_pred = epsilon_pred.flatten(1)
 
         # if t <= self.skip_step, then mask is 1, which means return pred_x0
         # otherwise, mask is 0, which means return diffuse
-        mask = (t <= self.skip_step).to(torch.long).view(*self.expand_shape)
-        return x0_pred * mask + self.diffuse(x0_pred, next_t, epsilon_pred) * (1 - mask)
+        mask = (t == 0).to(x0_pred.dtype).view(-1, 1)
+        return (x0_pred * mask + self.diffuse(x0_pred, next_t, epsilon_pred) * (1 - mask)).view(*original_shape)
 
 
     @torch.no_grad()
@@ -131,7 +133,7 @@ class DDIM:
         all_t = torch.arange(self.T, dtype=torch.long, device=self.device).repeat(x_T.shape[0], 1)  # (B, T)
 
         # [T, T-s, T-2s, ..., k], k >= 0
-        t_schedule = list(range(self.T - 1, 0, -self.skip_step))
+        t_schedule = list(range(self.T - 1, -1, -self.skip_step))
         if t_schedule[-1] != 0:
             t_schedule.append(0)
         # [T, T-s, T-2s, ..., 0]

@@ -49,11 +49,11 @@ class DDPM:
             alpha_bars[i] = product
         self.T = max_diffusion_step
 
-        self.beta = betas.view(-1, 1, 1)  # (T, 1, 1)
-        self.alpha = alphas.view(-1, 1, 1)  # (T, 1, 1)
-        self.αbar = alpha_bars.view(-1, 1, 1)  # (T, 1, 1)
-        self.sqrt_αbar = torch.sqrt(alpha_bars).view(-1, 1, 1)  # (T, 1, 1)
-        self.sqrt_1_m_αbar = torch.sqrt(1 - alpha_bars).view(-1, 1, 1)  # (T, 1, 1)
+        self.beta = betas.view(-1, 1)
+        self.alpha = alphas.view(-1, 1)
+        self.αbar = alpha_bars.view(-1, 1)
+        self.sqrt_αbar = torch.sqrt(alpha_bars).view(-1, 1)
+        self.sqrt_1_m_αbar = torch.sqrt(1 - alpha_bars).view(-1, 1)
 
     def diffuse(self, x_0: Tensor, t: int, eps_0_to_tp1: Tensor) -> Tensor:
         """
@@ -64,7 +64,8 @@ class DDPM:
         :param epsilon: Noise to be added.
         :return: The diffused sample at time step t.
         """
-        return self.sqrt_αbar[t] * x_0 + self.sqrt_1_m_αbar[t] * eps_0_to_tp1
+        original_shape = x_0.shape
+        return (self.sqrt_αbar[t] * x_0.flatten(1) + self.sqrt_1_m_αbar[t] * eps_0_to_tp1.flatten(1)).view(original_shape)
 
     def diffuseStep(self, x_t: Tensor, t: int, epsilon_t_to_tp1: Tensor) -> Tensor:
         """
@@ -75,7 +76,8 @@ class DDPM:
         :param epsilon_t_to_tp1: Noise to be added during the step.
         :return: The next state after the diffusion step.
         """
-        return torch.sqrt(self.alpha[t]) * x_t + torch.sqrt(1 - self.alpha[t]) * epsilon_t_to_tp1
+        original_shape = x_t.shape
+        return (torch.sqrt(self.alpha[t]) * x_t.flatten(1) + torch.sqrt(1 - self.alpha[t]) * epsilon_t_to_tp1.flatten(1)).view(original_shape)
 
     def denoiseStep(self, epsilon_pred: Tensor, x_tp1: Tensor, t: Tensor) -> Tensor:
         """
@@ -86,16 +88,16 @@ class DDPM:
         :param t: Current time step.
         :return: The denoised sample at the next time step.
         """
-
+        original_shape = x_tp1.shape
         beta = self.beta[t]
         alpha = self.alpha[t]
-        mu = (x_tp1 - beta / self.sqrt_1_m_αbar[t] * epsilon_pred) / torch.sqrt(alpha)
+        mu = (x_tp1.flatten(1) - beta / self.sqrt_1_m_αbar[t] * epsilon_pred.flatten(1)) / torch.sqrt(alpha)
 
         if t - 1 == 0:
-            return mu
+            return mu.view(original_shape)
 
-        stds = torch.sqrt((1 - self.αbar[t - 1]) / (1 - self.αbar[t]) * beta) * torch.randn_like(x_tp1)
-        return mu + stds
+        stds = torch.sqrt((1 - self.αbar[t - 1]) / (1 - self.αbar[t]) * beta) * torch.randn_like(mu)
+        return (mu + stds).view(original_shape)
 
     @torch.no_grad()
     def denoise(self,
@@ -116,7 +118,7 @@ class DDPM:
         all_t = torch.arange(self.T, dtype=torch.long, device=self.device).repeat(x_T.shape[0], 1)  # (B, T)
         pbar = tqdm(range(self.T - 1, -1, -1)) if verbose else range(self.T - 1, -1, -1)
         for t in pbar:
-            epsilon_pred = pred_func(x_t, all_t[:, t], **pred_func_args)
-            x_t = self.denoiseStep(epsilon_pred, x_t, all_t[:, t])
+            _, epsilon_pred = pred_func(x_t, all_t[:, t], **pred_func_args)
+            x_t = self.denoiseStep(epsilon_pred, x_t, t)
 
         return x_t
