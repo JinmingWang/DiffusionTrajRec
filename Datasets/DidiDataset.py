@@ -146,20 +146,20 @@ class DidiDataset(JimmyDataset):
         # Compute the number of points to erase for each trajectory
         n_erased = (traj_lens * erase_rates).to(torch.long)
         trajs_guess = torch.zeros_like(trajs)
-        query_mask = torch.zeros(B, self.pad_to_len, device=DEVICE)
+        point_type = torch.zeros(B, self.pad_to_len, device=DEVICE)
         for b in range(B):
             erase_indices = torch.randperm(traj_lens[b])[:n_erased[b]]
-            query_mask[b, erase_indices] = 1.0      # 1 for erased
-            query_mask[b, traj_lens[b]:] = -1.0     # -1 for padding
-            query_mask[b, [0, traj_lens[b] - 1]] = 0.0           # never erase the first and last point
-            trajs_guess[b] = DidiDataset.guessTraj(trajs[b], percent_times[b], query_mask[b])
+            point_type[b, erase_indices] = 1.0      # 1 for erased
+            point_type[b, traj_lens[b]:] = -1.0     # -1 for padding
+            point_type[b, [0, traj_lens[b] - 1]] = 0.0           # never erase the first and last point
+            trajs_guess[b] = DidiDataset.guessTraj(trajs[b], percent_times[b], point_type[b])
 
         return {
             "traj": trajs,  # (B, L, 2)
             "road": self.match_roads[indices].to(DEVICE),    # (B, L, 2)
             "%time": percent_times,  # (B, L)
             "traj_guess": trajs_guess,  # (B, L)
-            "query_mask": query_mask,   # (B, L)
+            "point_type": point_type,   # (B, L)
             "traj_len": traj_lens,      # (B, )
             "road_len": self.road_lens[indices].to(DEVICE),     # (B, )
             "erase_rate": erase_rates,              # (B, )
