@@ -127,15 +127,7 @@ class Trainer:
                 eval_losses[name][i] = loss_dict[name]
 
         if tm is not None:
-            traj_recon = output_dict["output"]
-            traj_gt = data_dict["traj"]
-            traj_lens = data_dict["traj_len"]
-            fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-            ax[0].set_title("Ground Truth")
-            ax[1].set_title("Reconstructed Trajectory")
-            plotTraj(ax[0], traj_gt, traj_lens, color="blue", linewidth=1, markersize=1)
-            plotTraj(ax[1], traj_recon, traj_lens, color="red", linewidth=1, markersize=1)
-            tm.log(pm.overall_progress, Visualization=fig)
+            tm.log(pm.overall_progress, Visualization=output_dict["fig"])
 
         self.model.train()
 
