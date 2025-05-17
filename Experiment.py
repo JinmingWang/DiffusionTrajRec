@@ -35,10 +35,11 @@ class Experiment:
                                         dataset_root="/home/jimmy/Data/Didi/",
                                         pad_to_len=512,
                                         min_erase_rate=0.1,
-                                        max_erase_rate=0.9,
+                                        max_erase_rate=1.0,
                                         batch_size=64,
                                         drop_last=True,
-                                        shuffle=True)
+                                        shuffle=True,
+                                        compute_guess = False,)
 
 
         # The default hyperparameters for the experiment.
