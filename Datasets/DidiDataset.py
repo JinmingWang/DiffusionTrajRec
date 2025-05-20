@@ -61,7 +61,7 @@ class DidiDataset(JimmyDataset):
             # --- Sequential Features ---
             self.trajs = dataset["traj"]
             self.match_roads = dataset["match_road"]  # B * (L_traj[b], 2)
-            self.percent_times = dataset["%time"]  # B * (L_traj[b], )
+            self.percent_times = dataset["%time"]  # B * (L_traj[b], 1)
 
             # --- Integer Features ---
             self.traj_lens = dataset["traj_len"].to(DEVICE)
@@ -69,7 +69,7 @@ class DidiDataset(JimmyDataset):
             self.driver_ids = dataset["driver_id"].to(DEVICE)
             self.start_weekdays = dataset["start_weekday"].to(DEVICE)
             self.start_seconds = dataset["start_second"].to(DEVICE)
-            self.durations = dataset["duration"].to(DEVICE)
+            self.durations = dataset["duration"].to(DEVICE).unsqueeze(-1) / 3600  # (B, 1) convert seconds to hours
 
             # --- Float Features ---
             self.total_distance = dataset["total_distance"].to(DEVICE)
@@ -205,9 +205,12 @@ class DidiDataset(JimmyDataset):
 
             point_type[b, erase_indices] = 1.0  # 1 for erased
             point_type[b, traj_lens[b]:] = -1.0  # -1 for padding
+
+            # # start and end points are never erased, because they are necessary for guessing
+            point_type[b, [0, traj_lens[b] - 1]] = 0.0
             trajs_guess[b] = self.guessTraj(trajs[b], percent_times[b], point_type[b])
 
-        return erase_rates, n_erased, trajs_guess, point_type
+        return erase_rates, n_erased, trajs_guess, point_type.unsqueeze(2)
 
 
 
@@ -225,9 +228,9 @@ class DidiDataset(JimmyDataset):
         return {
             "traj": trajs,  # (B, L, 2)
             "road": self.match_roads[indices],    # (B, L, 2)
-            "%time": percent_times,  # (B, L)
-            "traj_guess": trajs_guess,  # (B, L)
-            "point_type": point_type,   # (B, L)
+            "%time": percent_times,  # (B, L, 1)
+            "traj_guess": trajs_guess,  # (B, L, 2)
+            "point_type": point_type,   # (B, L, 1)
             "traj_len": traj_lens,      # (B, )
             "road_len": self.road_lens[indices],     # (B, )
             "erase_rate": erase_rates,              # (B, )
@@ -236,12 +239,13 @@ class DidiDataset(JimmyDataset):
             "driver_id": self.driver_ids[indices],           # (B, )
             "start_weekday": self.start_weekdays[indices],   # (B, )
             "start_second": self.start_seconds[indices],    # (B, )
+            "start_minute": self.start_seconds[indices] // 60,  # (B, )
             "duration": self.durations[indices],             # (B, )
             "point_mean": self.point_mean,      # (1, 2)
             "point_std": self.point_std,        # (1, 2)
             "driver_count": self.driver_count,  # python int
-            "total_distance": self.total_distance[indices],
-            "avg_distance": self.avg_distance[indices],
+            "total_distance": self.total_distance[indices].unsqueeze(-1),
+            "avg_distance": self.avg_distance[indices].unsqueeze(-1),
             "start_pos": self.start_pos[indices],
             "end_pos": self.end_pos[indices]
         }
