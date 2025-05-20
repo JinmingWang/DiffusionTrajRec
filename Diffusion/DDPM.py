@@ -122,3 +122,23 @@ class DDPM:
             x_t = self.denoiseStep(epsilon_pred, x_t, t)
 
         return x_t
+
+
+    def combineNoise(self, eps_0_to_t, eps_t_to_tp1, t):
+        """
+
+        :param eps_0_to_t: Combined noise,  (B, 2, L)
+        :param eps_t_to_tp1: Noise for step, (B, 2, L)
+        :param t: t int {0, 1, 2, ... T-1}
+        :return: eps_0_to_tp1
+        """
+        if t == 0:
+            return eps_t_to_tp1
+
+        original_shape = eps_0_to_t.shape
+
+        term_1 = torch.sqrt(self.alpha[t]) * self.sqrt_1_m_αbar[t - 1] * eps_0_to_t.flatten(1)
+
+        term_2 = torch.sqrt(1 - self.alpha[t]) * eps_t_to_tp1.flatten(1)
+
+        return ((term_1 + term_2) / self.sqrt_1_m_αbar[t]).view(original_shape)
