@@ -4,11 +4,12 @@ from .DidiDataset import DidiDataset
 
 class StatePropDidiDataset():
 
-    data_keys = ["traj", "road", "%time", "traj_guess", "query_mask", "traj_len", "road_len",
-                    "erase_rate", "query_size", "observe_size", "driver_id", "start_weekday", "start_seconds",
+    data_keys = ["traj", "road", "%time", "traj_guess", "point_type", "traj_len", "road_len",
+                    "erase_rate", "query_size", "observe_size", "driver_id", "start_weekday", "start_minute",
                     "duration", "total_distance", "avg_distance", "start_pos", "end_pos"]
 
     def __init__(self,
+                 n_iters: int,
                  ddm: Union["DDPM", "DDIM"],
                  state_shapes: List[tuple[int]],
                  t_distribution: Literal['same', 'stride', 'uniform'],
@@ -50,7 +51,7 @@ class StatePropDidiDataset():
             shuffle=shuffle
         )
 
-        self.cache: dict[str, Any] = dummy_dataset[0]
+        self.cache: dict[str, Any] = next(iter(dummy_dataset))
 
         # The actual dataset has batch_size = 1, so we can load data one by one
         self.dataset = DidiDataset(
@@ -76,7 +77,8 @@ class StatePropDidiDataset():
         # Each data sample is used for diff_steps iterations
         # There are len(dataset) samples in the dataset
         # In the last diff_steps iterations, we cannot have full batch, so dropped
-        self.total_iters = len(self.dataset) * self.diff_steps - self.diff_steps
+        self.total_iters = n_iters
+        self.n_batches = n_iters
 
         # The current and the next t value for each sample
         # t_i is initialized to 1, which means t = self.t_schedule[1] = T-s
@@ -84,27 +86,31 @@ class StatePropDidiDataset():
         self.cache["t_i"] = torch.ones(batch_size, dtype=torch.int32, device=DEVICE)
         # The noise added to traj_0_query to get traj_tnext_query
         # The noise for each sample is different
-        self.cache["eps_0:t_next"] = [torch.zeros(self.T, self.pad_to_len, 2, device=DEVICE) for _ in range(self.diff_steps)]
+        self.cache["eps_0:tnext"] = [torch.zeros(self.T, self.pad_to_len, 2, device=DEVICE) for _ in range(batch_size)]
         # The trajectory with noise added to query points
         self.cache["noisy_traj"] = torch.zeros(batch_size, self.T + 1, self.pad_to_len, 2, device=DEVICE)
         # the state from t+1 to T
-        self.cache["s_t+1:T"] = []
+        self.cache["s_tnext"] = []
         for shape in state_shapes:
-            self.cache["s_t+1:T"].append(torch.zeros(batch_size, *shape, device=DEVICE))
+            self.cache["s_tnext"].append(torch.zeros(batch_size, *shape, device=DEVICE))
 
         self.B_range = torch.arange(self.batch_size, device=DEVICE)
 
 
     def loadDataToBatch(self, place_at: int):
-        data_dict = self.dataset_iter.next()
+        try:
+            data_dict = next(self.dataset_iter)
+        except StopIteration:
+            self.dataset_iter = iter(self.dataset)
+            data_dict = next(self.dataset_iter)
 
-        noisy_trajs, eps_0_to_t_next = self.addNoise(data_dict["traj"][0], data_dict["query_mask"])
+        noisy_trajs, eps_0_to_t_next = self.addNoise(data_dict["traj"][0], data_dict["point_type"][0])
         self.cache["noisy_traj"][place_at] = noisy_trajs
-        self.cache["eps_0:t_next"][place_at] = eps_0_to_t_next
+        self.cache["eps_0:tnext"][place_at] = eps_0_to_t_next
 
         self.cache["t_i"][place_at] = 1
-        for i in range(len(self.cache["s_t+1:T"])):
-            self.cache["s_t+1:T"][i][place_at] = torch.zeros_like(self.cache["s_t+1:T"][i][place_at])
+        for i in range(len(self.cache["s_tnext"])):
+            self.cache["s_tnext"][i][place_at] = torch.zeros_like(self.cache["s_tnext"][i][place_at])
 
         for key in self.data_keys:
             self.cache[key][place_at] = data_dict[key][0]
@@ -121,6 +127,10 @@ class StatePropDidiDataset():
         # Fill the cache with the first batch
         for b in range(self.batch_size):
             self.loadDataToBatch(b)
+
+        # Reset dataset_iter
+        self.dataset_iter = iter(self.dataset)
+
         # There B t_i values
         # Make them evenly distributed over t_schedule, i.e. over [1, diff_steps)
         if self.t_distribution == 'same':
@@ -136,6 +146,7 @@ class StatePropDidiDataset():
 
     def __next__(self):
         if self.iter_idx >= self.total_iters:
+            print(f"STOP {self.iter_idx} {self.total_iters}")
             raise StopIteration
 
         t = self.t_schedule[self.cache["t_i"]]
@@ -147,11 +158,11 @@ class StatePropDidiDataset():
             "t_next": t_next,   # (B,)
             "traj_0": self.cache["traj"],               # (B, L, 2)
             "traj_t": self.cache["noisy_traj"][self.B_range, t],   # (B, L, 2)
-            "traj_t+1": self.cache["noisy_traj"][self.B_range, t_next],  # (B, L, 2)
+            "traj_tnext": self.cache["noisy_traj"][self.B_range, t_next],  # (B, L, 2)
             "traj_T": self.cache["noisy_traj"][:, -1],  # (B, L, 2)
-            "eps_0:t": [self.cache["eps_0:t_next"][i][t[i]].clone() for i in range(self.batch_size)],  # B * (L_query, 2)
-            "eps_0:t+1": [self.cache["eps_0:t_next"][i][t_next[i]].clone() for i in range(self.batch_size)],  # B * (L_query, 2)
-            "s_t+1": [each.clone() for each in self.cache["s_t+1:T"]],  # n_features * (B, *feature_dims)
+            "eps_0:t": [self.cache["eps_0:tnext"][i][t[i]].clone() for i in range(self.batch_size)],  # B * (L_query, 2)
+            "eps_0:tnext": [self.cache["eps_0:tnext"][i][t_next[i]].clone() for i in range(self.batch_size)],  # B * (L_query, 2)
+            "s_tnext": [each.clone() for each in self.cache["s_tnext"]],  # n_features * (B, *feature_dims)
         }
 
         for key in self.data_keys[1:]:
@@ -172,15 +183,15 @@ class StatePropDidiDataset():
 
     def updateState(self, s_t_to_T: List[torch.Tensor]):
         for i in range(len(s_t_to_T)):
-            self.cache["s_t+1:T"][i] = s_t_to_T[i]
+            self.cache["s_tnext"][i] = s_t_to_T[i]
 
 
-    # @torch.compile
-    def addNoise(self, traj, query_mask):
+    @torch.compile
+    def addNoise(self, traj, point_type):
         # traj: (L, 2)
-        # query_mask: (L)
-        mask = query_mask > 0.5
-        query_subtraj = traj[mask]  # (M, 2)
+        # point_type: (L, 1)
+        query_mask = (point_type > 0.5).squeeze(1)
+        query_subtraj = traj[query_mask]  # (M, 2)
 
         step_noises = torch.randn(self.T, *query_subtraj.shape).to(DEVICE)
         comb_noises = step_noises.clone()
@@ -190,8 +201,19 @@ class StatePropDidiDataset():
         query_subtraj_t = query_subtraj
         for t in range(0, self.T):
             comb_noises[t] = self.ddm.combineNoise(comb_noises[t - 1], step_noises[t - 1], t - 1)
-            query_subtraj_t = self.ddm.diffusionForwardStep(query_subtraj_t, t - 1, step_noises[t - 1])
-            noisy_trajs[t+1][mask] = query_subtraj_t
+            query_subtraj_t = self.ddm.diffuse(query_subtraj_t, t - 1, step_noises[t - 1])
+            noisy_trajs[t+1][query_mask] = query_subtraj_t
 
         return noisy_trajs, comb_noises
+
+
+class StatePropDidiXianDataset(StatePropDidiDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs, city_name="Xian")
+
+
+class StatePropDidiChengduDataset(StatePropDidiDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs, city_name="Chengdu")
+
 

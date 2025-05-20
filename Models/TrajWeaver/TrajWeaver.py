@@ -2,15 +2,8 @@ from .DenoingUNet import DenoisingUNet
 from .Embedder import MixedCondEmbedder
 from .StatePropagator import MultiLevelStagePropagator
 from JimmyTorch.Models import *
-
-"""
-Total Training Params:                                                  23.26 M 
-fwd MACs:                                                               1.52 GMACs
-fwd FLOPs:                                                              3.04 GFLOPS
-fwd+bwd MACs:                                                           4.55 GMACs
-fwd+bwd FLOPs:                                                          9.13 GFLOPS
-"""
-
+import matplotlib.pyplot as plt
+from JimmyTorch.Datasets import plotTraj, geometricDistance
 
 class TrajWeaver(JimmyModel):
     def __init__(self,
@@ -31,8 +24,8 @@ class TrajWeaver(JimmyModel):
         self.embedder = MixedCondEmbedder(d_embed)
         self.embedder.addVector("start_pos", 2, 16)
         self.embedder.addVector("end_pos", 2, 16)
-        self.embedder.addVector("avg_mov_dist", 1, 16)
-        self.embedder.addCategorical("weekday", 7, 16)
+        self.embedder.addVector("avg_distance", 1, 16)
+        self.embedder.addCategorical("start_weekday", 7, 16)
         self.embedder.addCategorical("start_minute", 24 * 60, 64)
         self.embedder.addCategorical("traj_len", 513, 64)
 
@@ -40,7 +33,7 @@ class TrajWeaver(JimmyModel):
         self.denoising_unet = DenoisingUNet(d_in=d_in, d_out=d_out, d_state=d_state, d_list=d_list)
 
         # Initialize the state features
-        state_shapes = self.denoising_unet.getStateShapes(l_traj)
+        state_shapes = self.getStateShapes(l_traj, d_state, len(d_list) - 1)
         self.initial_state = nn.ParameterList([
             nn.Parameter(torch.randn(shape)) for shape in state_shapes
         ])
@@ -48,9 +41,10 @@ class TrajWeaver(JimmyModel):
         # The state propagator module
         self.state_propagator = MultiLevelStagePropagator(d_state, d_embed, n_heads)
 
-        self.train_loss_names = ["Train_MSE(0:t+1)", "Train_MSE(0:t)", "Train_MSE(total)"]
-        self.eval_loss_names = ["Eval_MSE_REC"]
-        self.mse_func = nn.MSELoss()
+        self.train_loss_names = ["MSE(0:t+1)", "MSE(0:t)", "Train_MSE"]
+        self.eval_loss_names = ["Eval_MSE", "Geo_Dist"]
+        self.mse_func = MaskedLoss(nn.MSELoss())
+        self.geo_dist_func = MaskedLoss(geometricDistance)
 
 
     def setInitialState(self, ddm_t: Tensor, state_features: List[Tensor]) -> List[Tensor]:
@@ -88,37 +82,43 @@ class TrajWeaver(JimmyModel):
 
 
     def __prepareInputs(self, data_dict: dict[str, Any]) -> dict[str, Any]:
-        concat_keys = ["road", "%time", "traj_guess", "query_mask"]
+        concat_keys = ["road", "%time", "traj_guess", "point_type"]
         concat_features = torch.cat([data_dict[k] for k in concat_keys], dim=2)  # (B, L, 6)
-        data_dict["inputs_t+1"] = torch.cat([data_dict["traj_t+1"], concat_features], dim=2)  # (B, L, 8)
+        data_dict["inputs_tnext"] = torch.cat([data_dict["traj_tnext"], concat_features], dim=2)  # (B, L, 8)
         data_dict["inputs_t"] = torch.cat([data_dict["traj_t"], concat_features], dim=2)  # (B, L, 8)
         return data_dict
 
+    @staticmethod
+    def getStateShapes(traj_len: int, d_state, n_stages: int) -> list[tuple[int, int]]:
+        L = traj_len
+        down_state_shapes = [(d_state, L // (2 ** i)) for i in range(n_stages)]
+        mid_state_shape = (d_state, L // (2 ** n_stages))
+        up_state_shapes = list(reversed([(d_state, L // (2 ** i)) for i in range(1, n_stages + 1)]))
+        return down_state_shapes + [mid_state_shape] + up_state_shapes
+
 
     def trainStep(self, data_dict) -> (dict[str, Any], dict[str, Any]):
-        device = data_dict['traj'].device
+        device = data_dict['traj_0'].device
 
         data_dict = self.__prepareInputs(data_dict)
+
+        query_mask = (data_dict['point_type'] > 0).to(torch.float32)
 
         if self.mixed_precision:
             # Automatic Mixed Precision (AMP) forward pass and loss calculation
             with torch.autocast(device_type=device, dtype=torch.float16):
                 pred_eps_0_to_tp1, state_features = self.denoising_unet(
-                    data_dict['inputs_t+1'],
-                    data_dict['t+1'],
-                    data_dict['s_t+1'],
-                    **data_dict
+                    data_dict['inputs_tnext'],
+                    data_dict['s_tnext'],
                 )
 
                 pred_eps_0_to_t, _ = self.denoising_unet(
                     data_dict['inputs_t'],
-                    data_dict['t'],
                     state_features,
-                    **data_dict
                 )
 
-                loss_0_to_tp1 = self.mse_fn(pred_eps_0_to_tp1, data_dict['eps_0:t+1'])
-                loss_0_to_t = self.mse_fn(pred_eps_0_to_t, data_dict['eps_0:t'])
+                loss_0_to_tp1 = self.mse_func(pred_eps_0_to_tp1, data_dict['eps_0:tnext'], query_mask)
+                loss_0_to_t = self.mse_func(pred_eps_0_to_t, data_dict['eps_0:t'], query_mask)
                 loss = loss_0_to_tp1 + loss_0_to_t
 
             # Backward pass with AMP
@@ -127,7 +127,7 @@ class TrajWeaver(JimmyModel):
             # Gradient clipping with AMP (if specified)
             if self.clip_grad > 0:
                 self.scaler.unscale_(self.optimizer)
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+                nn.utils.clip_grad_norm_(self.parameters(), self.clip_grad)
 
             # Optimizer step with AMP
             self.scaler.step(self.optimizer)
@@ -135,28 +135,24 @@ class TrajWeaver(JimmyModel):
         else:
             # Standard forward pass and backward pass
             pred_eps_0_to_tp1, state_features = self.denoising_unet(
-                data_dict['traj_t+1'],
-                data_dict['t+1'],
-                data_dict['s_t+1'],
-                **data_dict
+                data_dict['inputs_tnext'],
+                data_dict['s_tnext'],
             )
 
             pred_eps_0_to_t, _ = self.denoising_unet(
-                data_dict['traj_t'],
-                data_dict['t'],
+                data_dict['inputs_t'],
                 state_features,
-                **data_dict
             )
 
-            loss_0_to_tp1 = self.mse_fn(pred_eps_0_to_tp1, data_dict['eps_0:t+1'])
-            loss_0_to_t = self.mse_fn(pred_eps_0_to_t, data_dict['eps_0:t'])
+            loss_0_to_tp1 = self.mse_func(pred_eps_0_to_tp1, data_dict['eps_0:tnext'], query_mask)
+            loss_0_to_t = self.mse_func(pred_eps_0_to_t, data_dict['eps_0:t'], query_mask)
             loss = loss_0_to_tp1 + loss_0_to_t
 
             loss.backward()
 
             # Standard gradient clipping (if specified)
             if self.clip_grad > 0:
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+                nn.utils.clip_grad_norm_(self.parameters(), self.clip_grad)
 
             # Optimizer step
             self.optimizer.step()
@@ -165,9 +161,9 @@ class TrajWeaver(JimmyModel):
         self.optimizer.zero_grad()
 
         loss_dict = {
-            "Train_MSE(0:t+1)": loss_0_to_tp1.item(),
-            "Train_MSE(0:t)": loss_0_to_t.item(),
-            "Train_MSE(total)": loss.item()
+            "MSE(0:t+1)": loss_0_to_tp1.item(),
+            "MSE(0:t)": loss_0_to_t.item(),
+            "Train_MSE": loss.item()
         }
 
         output_dict = {
@@ -182,7 +178,9 @@ class TrajWeaver(JimmyModel):
         device = data_dict['traj'].device
         B = data_dict['traj'].shape[0]
 
-        concat_keys = ["road", "%time", "traj_guess", "query_mask"]
+        query_mask = (data_dict['point_type'] > 0).to(torch.float32)
+
+        concat_keys = ["road", "%time", "traj_guess", "point_type"]
         concat_features = torch.cat([data_dict[k] for k in concat_keys], dim=2)  # (B, L, 6)
         state_features = [f.repeat(B, 1, 1) for f in self.initial_state]
 
@@ -191,20 +189,39 @@ class TrajWeaver(JimmyModel):
 
         def predFunc(traj_t, t):
             nonlocal state_features
+            traj_t = traj_t * query_mask + data_dict['traj'] * (1 - query_mask)
             input_t = torch.cat([traj_t, concat_features], dim=2)
             noise_pred, state_features = self.denoising_unet(input_t, self.state_propagator(state_features, cond_embed))
             return None, noise_pred
 
         with torch.no_grad():
             traj_T = torch.randn_like(data_dict['traj'], device=device)
-            traj_recon = self.ddm.denoise(traj_T, predFunc)
+            partial_traj_0 = self.ddm.denoise(traj_T, predFunc)
+            loss = self.mse_func(partial_traj_0, data_dict['traj'], query_mask).item()
+            mean = data_dict["point_mean"].view(1, 1, 2)
+            std = data_dict["point_std"].view(1, 1, 2)
+            partial_traj_0_raw = partial_traj_0 * std + mean
+            traj_raw = data_dict['traj'] * std + mean
+            geo_dist = self.geo_dist_func(partial_traj_0_raw, traj_raw, query_mask).item()
 
-            mask = data_dict['query_mask'] > 0.5    # (B, L)
-            traj_query_rec = traj_recon[mask]   # (?, ), depends on how many elements are masked
-            traj_query_gt = data_dict['traj'][mask]   # (?, ), depends on how many elements are masked
+        traj_recon = (partial_traj_0 * query_mask + data_dict['traj'] * (1 - query_mask))[:20]
+        traj_gt = data_dict["traj"][:20]
+        traj_lens = data_dict["traj_len"][:20]
 
-            loss = self.mse_func(traj_query_rec, traj_query_gt)
-        return {"Eval_MSE_REC": loss.item()}, {"traj_recon": traj_recon.detach()}
+        # Draw the reconstructed trajectory
+        plt.close("all")
+        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        ax[0].set_title("Ground Truth")
+        ax[1].set_title("Reconstructed Trajectory")
+        plotTraj(ax[0], traj_gt, traj_lens, color="blue", linewidth=1, markersize=1)
+
+        for i in range(min(20, traj_recon.shape[0])):
+            traj_query_part = traj_recon[i][data_dict['point_type'][i, :, 0] == 1].view(-1, 2)
+            traj_observed_part = traj_recon[i][data_dict['point_type'][i, :, 0] == 0].view(-1, 2)
+            plotTraj(ax[1], traj_observed_part, color="black", linewidth=1, markersize=1)
+            plotTraj(ax[1], traj_query_part, color="red", linewidth=1, markersize=1)
+
+        return {"Eval_MSE": loss, "Geo_Dist": geo_dist}, {"traj_recon": traj_recon.detach(), "fig": fig}
 
 
 

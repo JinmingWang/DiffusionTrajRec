@@ -56,7 +56,8 @@ class MixedCondEmbedder(nn.Module):
         seq_embed_list = []
 
         for key in self.non_seq_embedders.keys():
-            non_seq_embed_list.append(self.non_seq_embedders[key](kw_cond[key]))
+            value = kw_cond[key]
+            non_seq_embed_list.append(self.non_seq_embedders[key](value))
 
         for key in self.seq_embedders.keys():
             seq_embed_list.append(self.seq_embedders[key](non_seq_embed_list[-1]))

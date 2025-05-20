@@ -1,14 +1,12 @@
-from Experiment import Experiment
+from Datasets import DidiChengduNovDataset, DidiXianNovDataset
+from TrainEvalTest.Experiment import Experiment
 from Models import *
 from Diffusion import *
 from JimmyTorch.Datasets import DEVICE
-from JimmyTorch.DynamicConfig import DynamicConfig
-from JimmyTorch.Training import loadModels
-
 
 
 def trainRoadMAE():
-    experiment = Experiment("训练小一些的RoadMAE，encoder和decoder数量用2和4取代4和8.")
+    experiment = Experiment("训练成都数据集")
     experiment.model_cfg.cls = RoadMAE
     experiment.model_cfg.add(
         mask_ratio=0.5,
@@ -24,6 +22,7 @@ def trainRoadMAE():
     experiment.model_cfg.compile_model = True
     experiment.model_cfg.mixed_precision = False
 
+    experiment.dataset_cfg.cls = DidiXianNovDataset
     experiment.dataset_cfg.compute_guess = False
     experiment.dataset_cfg.batch_size = 256
 
@@ -34,13 +33,11 @@ def trainRoadMAE():
     return trainer.model
 
 
-def trainGeoUNet(road_mae):
+def trainGeoUNet(road_mae, dataset, comment):
     road_mae.mask_ratio = 0.0
     road_mae.eval()
-    # road_mae = RoadMAE(0.0, 8, 4, 8, 4, 256, 128, 512).to(DEVICE)
-    # loadModels("Runs/DidiXianNovDataset/RoadMAE/250514_062607/best.pth", model=road_mae)
 
-    experiment = Experiment("之前的模型还是太准了，这次使用更小的RoadMAE，同时扩散步骤从500改为300")
+    experiment = Experiment(comment)
 
     ddm = DDIM(0.0001, 0.05, 300, scale_mode="quadratic", skip_step=10, device=DEVICE)
 
@@ -59,16 +56,23 @@ def trainGeoUNet(road_mae):
     experiment.model_cfg.compile_model = True
     experiment.model_cfg.mixed_precision = False
 
+    experiment.dataset_cfg.cls = dataset
     experiment.dataset_cfg.compute_guess = False
     experiment.dataset_cfg.batch_size = 256
 
-    experiment.constants["n_epochs"] = 250
+    experiment.constants["n_epochs"] = 300
     experiment.lr_scheduler_cfg.patience = 15
 
     experiment.start()
 
 
 if __name__ == '__main__':
-    road_mae = trainRoadMAE()
-    trainGeoUNet(road_mae)
+    # road_mae = trainRoadMAE()
 
+    road_mae = RoadMAE(0.0, 8, 2, 4, 4, 256, 128, 512).to(DEVICE)
+    road_mae.loadFrom("Runs/DidiXianNovDataset/RoadMAE/250517_180645/best.pth")
+    trainGeoUNet(road_mae, DidiXianNovDataset, "训练西安")
+
+    road_mae= RoadMAE(0.0, 8, 2, 4, 4, 256, 128, 512).to(DEVICE)
+    road_mae.loadFrom("Runs/DidiChengduNovDataset/RoadMAE/250518_111052/last.pth")
+    trainGeoUNet(road_mae, DidiChengduNovDataset, "训练成都")

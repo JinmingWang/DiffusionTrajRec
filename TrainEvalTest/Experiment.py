@@ -1,6 +1,6 @@
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from Trainer import Trainer
+from TrainEvalTest.Trainer import Trainer
 from Datasets import DidiXianNovDataset, DidiChengduNovDataset
 from JimmyTorch.Datasets import DEVICE
 from JimmyTorch.Training import *
@@ -57,6 +57,8 @@ class Experiment:
             "moving_avg": 1000,
             "eval_interval": 1,
         }
+
+        self.trainer_type = Trainer
 
 
     def __str__(self):
@@ -119,7 +121,7 @@ class Experiment:
         trainer_kwargs["log_dir"] = log_dir
         trainer_kwargs["save_dir"] = save_dir
 
-        trainer = Trainer(**trainer_kwargs)
+        trainer = self.trainer_type(**trainer_kwargs)
         trainer.start()
 
         rprint(f"[blue]Training done. Start testing.[/blue]")
