@@ -110,7 +110,7 @@ class StatePropDidiDataset():
 
         self.cache["t_i"][place_at] = 1
         for i in range(len(self.cache["s_tnext"])):
-            self.cache["s_tnext"][i][place_at] = torch.zeros_like(self.cache["s_tnext"][i][place_at])
+            self.cache["s_tnext"][i][place_at] = torch.randn_like(self.cache["s_tnext"][i][place_at])
 
         for key in self.data_keys:
             self.cache[key][place_at] = data_dict[key][0]
@@ -157,12 +157,12 @@ class StatePropDidiDataset():
             "t": t,            # (B,)
             "t_next": t_next,   # (B,)
             "traj_0": self.cache["traj"],               # (B, L, 2)
-            "traj_t": self.cache["noisy_traj"][self.B_range, t],   # (B, L, 2)
-            "traj_tnext": self.cache["noisy_traj"][self.B_range, t_next],  # (B, L, 2)
+            "traj_t": self.cache["noisy_traj"][self.B_range, t + 1],   # (B, L, 2)
+            "traj_tnext": self.cache["noisy_traj"][self.B_range, t_next + 1],  # (B, L, 2)
             "traj_T": self.cache["noisy_traj"][:, -1],  # (B, L, 2)
-            "eps_0:t": [self.cache["eps_0:tnext"][i][t[i]].clone() for i in range(self.batch_size)],  # B * (L_query, 2)
-            "eps_0:tnext": [self.cache["eps_0:tnext"][i][t_next[i]].clone() for i in range(self.batch_size)],  # B * (L_query, 2)
-            "s_tnext": [each.clone() for each in self.cache["s_tnext"]],  # n_features * (B, *feature_dims)
+            "eps_0:t": [self.cache["eps_0:tnext"][i][t[i]] for i in range(self.batch_size)],  # B * (L_query, 2)
+            "eps_0:tnext": [self.cache["eps_0:tnext"][i][t_next[i]] for i in range(self.batch_size)],  # B * (L_query, 2)
+            "s_tnext": self.cache["s_tnext"],  # n_features * (B, *feature_dims)
         }
 
         for key in self.data_keys[1:]:
@@ -181,9 +181,9 @@ class StatePropDidiDataset():
         return batch
 
 
-    def updateState(self, s_t_to_T: List[torch.Tensor]):
-        for i in range(len(s_t_to_T)):
-            self.cache["s_tnext"][i] = s_t_to_T[i]
+    def updateState(self, new_states: List[torch.Tensor]):
+        for i in range(len(new_states)):
+            self.cache["s_tnext"][i] = new_states[i].detach()
 
 
     @torch.compile
@@ -199,10 +199,10 @@ class StatePropDidiDataset():
         noisy_trajs = traj.unsqueeze(0).repeat(self.T + 1, 1, 1)
 
         query_subtraj_t = query_subtraj
-        for t in range(0, self.T):
-            comb_noises[t] = self.ddm.combineNoise(comb_noises[t - 1], step_noises[t - 1], t - 1)
-            query_subtraj_t = self.ddm.diffuse(query_subtraj_t, t - 1, step_noises[t - 1])
-            noisy_trajs[t+1][query_mask] = query_subtraj_t
+        for t in range(1, self.T):
+            comb_noises[t] = self.ddm.combineNoise(comb_noises[t - 1], step_noises[t], t)
+            query_subtraj_t = self.ddm.diffuseStep(query_subtraj_t, t - 1, step_noises[t - 1])
+            noisy_trajs[t][query_mask] = query_subtraj_t
 
         return noisy_trajs, comb_noises
 
