@@ -24,6 +24,10 @@ class Experiment:
     def __init__(self, comments: str):
         self.comments = comments
 
+        self.optimizer_cfg = DynamicConfig(torch.optim.AdamW,
+                                           lr=2e-4,
+                                           amsgrad=True)
+
         self.model_cfg = DynamicConfig(JimmyModel,
                                        optimizer_cls=torch.optim.AdamW,
                                        optimizer_args={"lr": 2e-4, "amsgrad": True},
@@ -31,15 +35,38 @@ class Experiment:
                                        compile_model=False,
                                        clip_grad=0.0)
 
-        self.dataset_cfg = DynamicConfig(DidiXianNovDataset,
-                                        dataset_root="/home/jimmy/Data/Didi/",
-                                        pad_to_len=512,
-                                        min_erase_rate=0.1,
-                                        max_erase_rate=1.0,
-                                        batch_size=64,
-                                        drop_last=True,
-                                        shuffle=True,
-                                        compute_guess = False,)
+        self.train_set_cfg = DynamicConfig(DidiXianNovDataset,
+                                           dataset_root="/home/jimmy/Data/Didi/",
+                                           pad_to_len=512,
+                                           min_erase_rate=0.1,
+                                           max_erase_rate=1.0,
+                                           batch_size=64,
+                                           drop_last=True,
+                                           shuffle=True,
+                                           set_name="train",
+                                           compute_guess = False, )
+
+        self.eval_set_cfg = DynamicConfig(DidiXianNovDataset,
+                                           dataset_root="/home/jimmy/Data/Didi/",
+                                           pad_to_len=512,
+                                           min_erase_rate=0.5,
+                                           max_erase_rate=0.7,
+                                           batch_size=64,
+                                           drop_last=True,
+                                           shuffle=True,
+                                           set_name="eval",
+                                           compute_guess=False, )
+
+        self.test_set_cfg = DynamicConfig(DidiXianNovDataset,
+                                          dataset_root="/home/jimmy/Data/Didi/",
+                                          pad_to_len=512,
+                                          min_erase_rate=0.5,
+                                          max_erase_rate=0.7,
+                                          batch_size=1,
+                                          drop_last=True,
+                                          shuffle=True,
+                                          set_name="test",
+                                          compute_guess=False, )
 
 
         # The default hyperparameters for the experiment.
@@ -63,7 +90,9 @@ class Experiment:
 
     def __str__(self):
         return (f"Experiment{{\n"
-                f"\tdataset={self.dataset_cfg}\n"
+                f"\ttrainset={self.train_set_cfg}\n"
+                f"\tevalset={self.eval_set_cfg}\n"
+                f"\ttestset={self.test_set_cfg}\n"
                 f"\tmodel={self.model_cfg}\n"
                 f"\tlr_scheduler={self.lr_scheduler_cfg}\n"
                 f"\tconstants={self.constants}\n}}")
@@ -81,11 +110,12 @@ class Experiment:
         """
         rprint(f"[#00ff00]--- Start Experiment \"{self.comments}\" ---[/#00ff00]")
 
-        self.dataset_cfg.set_name = "train"
-        train_set = self.dataset_cfg.build()
-        self.dataset_cfg.set_name = "eval"
-        eval_set = self.dataset_cfg.build()
+        train_set = self.train_set_cfg.build()
+        eval_set = self.eval_set_cfg.build()
 
+        self.model_cfg.optimizer_cls = self.optimizer_cfg.cls
+        self.model_cfg.optimizer_args = {"lr": self.optimizer_cfg.lr,
+                                         "amsgrad": self.optimizer_cfg.amsgrad}
         model = self.model_cfg.build().to(DEVICE)
         model.initialize()
 
@@ -125,9 +155,7 @@ class Experiment:
         trainer.start()
 
         rprint(f"[blue]Training done. Start testing.[/blue]")
-        self.dataset_cfg.set_name = "test"
-        self.dataset_cfg.batch_size = 1
-        test_set = self.dataset_cfg.build()
+        test_set = self.test_set_cfg.build()
         test_losses = trainer.evaluate(test_set, compute_avg=False)
 
         test_report = pd.DataFrame.from_dict(test_losses)
