@@ -209,6 +209,7 @@ class DidiDataset(JimmyDataset):
             # # start and end points are never erased, because they are necessary for guessing
             point_type[b, [0, traj_lens[b] - 1]] = 0.0
             trajs_guess[b] = self.guessTraj(trajs[b], percent_times[b], point_type[b])
+            n_erased[b] = torch.sum(point_type[b] > 0.1).to(torch.long)
 
         return erase_rates, n_erased, trajs_guess, point_type.unsqueeze(2)
 
