@@ -22,9 +22,9 @@ def trainRoadMAE():
     experiment.model_cfg.compile_model = True
     experiment.model_cfg.mixed_precision = False
 
-    experiment.dataset_cfg.cls = DidiXianNovDataset
-    experiment.dataset_cfg.compute_guess = False
-    experiment.dataset_cfg.batch_size = 256
+    experiment.train_set_dfg.cls = DidiXianNovDataset
+    experiment.train_set_dfg.compute_guess = False
+    experiment.train_set_dfg.batch_size = 256
 
     experiment.constants["n_epochs"] = 250
     experiment.lr_scheduler_cfg.patience = 15
@@ -56,9 +56,16 @@ def trainGeoUNet(road_mae, dataset, comment):
     experiment.model_cfg.compile_model = True
     experiment.model_cfg.mixed_precision = False
 
-    experiment.dataset_cfg.cls = dataset
-    experiment.dataset_cfg.compute_guess = False
-    experiment.dataset_cfg.batch_size = 256
+    experiment.train_set_cfg.cls = dataset
+    experiment.train_set_cfg.set_name = "train"
+    experiment.train_set_cfg.compute_guess = False
+    experiment.train_set_cfg.batch_size = 256
+
+    experiment.eval_set_cfg.cls = dataset
+    experiment.eval_set_cfg.compute_guess = False
+    experiment.eval_set_cfg.batch_size = 256
+    experiment.test_set_cfg.cls = dataset
+    experiment.test_set_cfg.compute_guess = False
 
     experiment.constants["n_epochs"] = 300
     experiment.lr_scheduler_cfg.patience = 15
