@@ -13,6 +13,7 @@ class TrajWeaver(JimmyModel):
                  d_state: int,
                  d_list: list[int],
                  d_embed: int,
+                 d_time: int,
                  l_traj: int,
                  n_heads: int,
                  **JM_kwargs):
@@ -21,7 +22,7 @@ class TrajWeaver(JimmyModel):
         self.ddm = ddm
 
         # The conditional feature embedder module
-        self.embedder = MixedCondEmbedder(d_embed)
+        self.embedder = MixedCondEmbedder(32, d_embed)
         self.embedder.addVector("start_pos", 2, 16)
         self.embedder.addVector("end_pos", 2, 16)
         self.embedder.addVector("avg_distance", 1, 16)
@@ -30,7 +31,8 @@ class TrajWeaver(JimmyModel):
         self.embedder.addCategorical("traj_len", 513, 64)
 
         # The denoising UNet module
-        self.denoising_unet = DenoisingUNet(d_in=d_in, d_out=d_out, d_state=d_state, d_list=d_list)
+        self.denoising_unet = DenoisingUNet(d_in=d_in, d_out=d_out, d_state=d_state, ddm_T=ddm.T,
+                                            d_time=d_time, n_heads=n_heads, d_list=d_list)
 
         # Initialize the state features
         state_shapes = self.getStateShapes(l_traj, d_state, len(d_list) - 1)
@@ -76,7 +78,7 @@ class TrajWeaver(JimmyModel):
         # Propagate the state features
         state_features = self.state_propagator(state_features, cond_embed)
         # Pass the noisy input and state features through the UNet
-        noise_pred, new_state_features = self.denoising_unet(noisy_input, state_features)
+        noise_pred, new_state_features = self.denoising_unet(noisy_input, ddm_t, state_features)
         # Return the predicted noise
         return noise_pred, new_state_features
 
@@ -107,15 +109,14 @@ class TrajWeaver(JimmyModel):
         if self.mixed_precision:
             # Automatic Mixed Precision (AMP) forward pass and loss calculation
             with torch.autocast(device_type=device, dtype=torch.float16):
-                pred_eps_0_to_tp1, state_features = self.denoising_unet(
-                    data_dict['inputs_tnext'],
-                    data_dict['s_tnext'],
-                )
+                state_features = self.setInitialState(data_dict["t_next"], data_dict['s_tnext'])
+                cond_embed = self.embedder(**data_dict)
+                pred_eps_0_to_tp1, state_features = self.denoising_unet(data_dict['inputs_tnext'],
+                                                                        self.state_propagator(state_features,
+                                                                                              cond_embed))
 
-                pred_eps_0_to_t, _ = self.denoising_unet(
-                    data_dict['inputs_t'],
-                    state_features,
-                )
+                pred_eps_0_to_t = self.denoising_unet(data_dict['inputs_t'],
+                                                      self.state_propagator(state_features, cond_embed))[0]
 
                 loss_0_to_tp1 = self.mse_func(pred_eps_0_to_tp1, data_dict['eps_0:tnext'], query_mask)
                 loss_0_to_t = self.mse_func(pred_eps_0_to_t, data_dict['eps_0:t'], query_mask)
@@ -133,16 +134,19 @@ class TrajWeaver(JimmyModel):
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
+            # Set init state features if tnext is the first step of the denoising process (ddm.T - 1)
+            state_features = self.setInitialState(data_dict["t_next"], data_dict['s_tnext'])
+            # Embed the conditional features
+            cond_embed = self.embedder(**data_dict)
             # Standard forward pass and backward pass
-            pred_eps_0_to_tp1, state_features = self.denoising_unet(
-                data_dict['inputs_tnext'],
-                data_dict['s_tnext'],
-            )
+            pred_eps_0_to_tp1, state_features = self.denoising_unet(data_dict['inputs_tnext'], data_dict["t_next"],
+                                                                    self.state_propagator(state_features, cond_embed))
 
-            pred_eps_0_to_t, _ = self.denoising_unet(
-                data_dict['inputs_t'],
-                state_features,
-            )
+            pred_eps_0_to_t = self.denoising_unet(data_dict['inputs_t'], data_dict["t"],
+                                                  self.state_propagator(state_features, cond_embed))[0]
+
+            # Why don't use forward?
+            # Because it runs setInitiaState and embedder twice, which is not efficient
 
             loss_0_to_tp1 = self.mse_func(pred_eps_0_to_tp1, data_dict['eps_0:tnext'], query_mask)
             loss_0_to_t = self.mse_func(pred_eps_0_to_t, data_dict['eps_0:t'], query_mask)
@@ -169,6 +173,7 @@ class TrajWeaver(JimmyModel):
         output_dict = {
             "pred_eps_0_to_tp1": pred_eps_0_to_tp1.detach(),
             "pred_eps_0_to_t": pred_eps_0_to_t.detach(),
+            "state_features": state_features,
         }
 
         return loss_dict, output_dict
@@ -191,12 +196,12 @@ class TrajWeaver(JimmyModel):
             nonlocal state_features
             traj_t = traj_t * query_mask + data_dict['traj'] * (1 - query_mask)
             input_t = torch.cat([traj_t, concat_features], dim=2)
-            noise_pred, state_features = self.denoising_unet(input_t, self.state_propagator(state_features, cond_embed))
+            noise_pred, state_features = self.denoising_unet(input_t, t, self.state_propagator(state_features, cond_embed))
             return None, noise_pred
 
         with torch.no_grad():
-            traj_T = torch.randn_like(data_dict['traj'], device=device)
-            partial_traj_0 = self.ddm.denoise(traj_T, predFunc)
+            partial_traj_T = torch.randn_like(data_dict['traj']) * query_mask + data_dict['traj'] * (1 - query_mask)
+            partial_traj_0 = self.ddm.denoise(partial_traj_T, predFunc)
             loss = self.mse_func(partial_traj_0, data_dict['traj'], query_mask).item()
             mean = data_dict["point_mean"].view(1, 1, 2)
             std = data_dict["point_std"].view(1, 1, 2)

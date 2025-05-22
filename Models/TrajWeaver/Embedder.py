@@ -1,12 +1,13 @@
 from JimmyTorch.Models import *
 
 class MixedCondEmbedder(nn.Module):
-    def __init__(self, d_embed: int):
+    def __init__(self, l_embed: int, d_embed: int):
         super().__init__()
         self.non_seq_embedders = nn.ModuleDict()
 
         self.seq_embedders = nn.ModuleDict()
 
+        self.l_embed = l_embed
         self.d_embed = d_embed
         self.total_non_seq_dim = 0
         self.total_seq_dim = 0
@@ -40,11 +41,11 @@ class MixedCondEmbedder(nn.Module):
         self.__updateAggregator()
 
     def __updateAggregator(self):
-        d_out = self.d_embed * len(self.non_seq_embedders)
+        d_out = self.d_embed * self.l_embed
         self.aggregators["non_sequential"] = nn.Sequential(FCLayers(
             [self.total_non_seq_dim, self.total_non_seq_dim, d_out, d_out], 
             act=nn.SiLU(inplace=True)
-            ), nn.Unflatten(-1, (len(self.non_seq_embedders), -1)))
+            ), nn.Unflatten(-1, (self.l_embed, -1)))
         
         self.aggregators["sequential"] = FCLayers(
             [self.total_seq_dim, self.total_seq_dim, self.d_embed],

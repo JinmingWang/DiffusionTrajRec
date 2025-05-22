@@ -10,6 +10,8 @@ class MultiLevelStagePropagator(nn.Module):
             nn.Linear(d_state, d_state),
         )
 
+        self.pos_encoder = PosEncoderSinusoidal(d_state, max_len=3000, merge_mode="add")
+
         self.cross_attn = nn.MultiheadAttention(d_state, n_heads, batch_first=True)
 
     def forward(self, h, cond):
@@ -18,13 +20,12 @@ class MultiLevelStagePropagator(nn.Module):
         :param cond: the conditional feature (B, L_cond, d_cond)
         """
         state_len_list = [h_i.shape[2] for h_i in h]
-        cat_h = torch.cat(h, dim=2).transpose(1, 2)     # (B, L_all_state, d_state)
+        cat_h = self.pos_encoder(torch.cat(h, dim=2).transpose(1, 2))     # (B, L_all_state, d_state)
         cond = self.cond_proj(cond)     # (B, L_cond, d_state)
 
         cat_h = cat_h + self.cross_attn(cat_h, cond, cond)[0]     # (B, L_all_state, d_state)
-        cat_h = cat_h.transpose(1, 2)     # (B, d_state, L_all_state)
 
-        return list(torch.split(cat_h, state_len_list, dim=2))     # n_stages * (B, d_state, L_state)
+        return list(torch.split(cat_h.transpose(1, 2), state_len_list, dim=2))     # n_stages * (B, d_state, L_state)
 
 
 class CGRU(nn.Module):

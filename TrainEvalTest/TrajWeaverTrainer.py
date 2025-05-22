@@ -42,17 +42,7 @@ class TrajWeaverTrainer:
         """
 
         self.train_set = train_set
-        self.eval_set = DidiDataset(
-            eval_set.dataset_root,
-            eval_set.city_name,
-            pad_to_len=eval_set.pad_to_len,
-            min_erase_rate=eval_set.min_erase_rate,
-            max_erase_rate=eval_set.max_erase_rate,
-            set_name=eval_set.set_name,
-            batch_size=eval_set.batch_size,
-            drop_last=eval_set.drop_last,
-            shuffle=eval_set.shuffle
-        )
+        self.eval_set = eval_set
         self.model = model
 
         if not hasattr(lr_scheduler, 'update'):
@@ -93,6 +83,8 @@ class TrajWeaverTrainer:
             for i, data_dict in enumerate(loader):
                 # forward, backward, optimization
                 loss_dict, output_dict = self.model.trainStep(data_dict)
+
+                self.train_set.updateState(output_dict["state_features"])
 
                 # Compute moving average of losses
                 for loss_name in self.model.train_loss_names:
