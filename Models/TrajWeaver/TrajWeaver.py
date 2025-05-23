@@ -13,32 +13,40 @@ class TrajWeaver(JimmyModel):
                  d_state: int,
                  d_list: list[int],
                  d_embed: int,
-                 d_time: int,
                  l_traj: int,
                  n_heads: int,
                  **JM_kwargs):
 
         super().__init__(**JM_kwargs)
         self.ddm = ddm
+        self.d_embed = d_embed
 
         # The conditional feature embedder module
         self.embedder = MixedCondEmbedder(32, d_embed)
         self.embedder.addVector("start_pos", 2, 16)
         self.embedder.addVector("end_pos", 2, 16)
         self.embedder.addVector("avg_distance", 1, 16)
+        self.embedder.addVector("total_distance", 1, 16)
+        self.embedder.addVector("duration", 1, 16)
         self.embedder.addCategorical("start_weekday", 7, 16)
         self.embedder.addCategorical("start_minute", 24 * 60, 64)
         self.embedder.addCategorical("traj_len", 513, 64)
 
         # The denoising UNet module
-        self.denoising_unet = DenoisingUNet(d_in=d_in, d_out=d_out, d_state=d_state, ddm_T=ddm.T,
-                                            d_time=d_time, n_heads=n_heads, d_list=d_list)
+        self.denoising_unet = DenoisingUNet(d_in=d_in, d_out=d_out, d_state=d_state, d_list=d_list, n_heads=n_heads)
 
         # Initialize the state features
         state_shapes = self.getStateShapes(l_traj, d_state, len(d_list) - 1)
         self.initial_state = nn.ParameterList([
-            nn.Parameter(torch.randn(shape)) for shape in state_shapes
+            nn.Parameter(torch.randn(shape) * 0.1) for shape in state_shapes
         ])
+
+        silu = nn.SiLU(inplace=True)
+        self.t_embed = nn.Sequential(
+            nn.Embedding(ddm.T, d_embed * 2),
+            FCLayers([d_embed * 2, d_embed * 2, d_embed * 2, d_embed], act=silu, final_act=silu),
+            nn.Unflatten(1, (1, d_embed))   # (B, 1, d_embed)
+        )
 
         # The state propagator module
         self.state_propagator = MultiLevelStagePropagator(d_state, d_embed, n_heads)
@@ -74,11 +82,13 @@ class TrajWeaver(JimmyModel):
         """
         state_features = self.setInitialState(ddm_t, state_features)
         # Embed the conditional features
+        # cond_embed = torch.randn(noisy_input.shape[0], 32, self.d_embed).to(noisy_input.device)
         cond_embed = self.embedder(**kw_cond)
+        cond_embed = cond_embed + self.t_embed(ddm_t)
         # Propagate the state features
         state_features = self.state_propagator(state_features, cond_embed)
         # Pass the noisy input and state features through the UNet
-        noise_pred, new_state_features = self.denoising_unet(noisy_input, ddm_t, state_features)
+        noise_pred, new_state_features = self.denoising_unet(noisy_input, state_features)
         # Return the predicted noise
         return noise_pred, new_state_features
 
