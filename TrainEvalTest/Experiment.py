@@ -50,10 +50,10 @@ class Experiment:
                                            dataset_root="/home/jimmy/Data/Didi/",
                                            pad_to_len=512,
                                            min_erase_rate=0.5,
-                                           max_erase_rate=0.7,
+                                           max_erase_rate=0.6,
                                            batch_size=64,
                                            drop_last=True,
-                                           shuffle=True,
+                                           shuffle=False,
                                            set_name="eval",
                                            compute_guess=False, )
 
@@ -61,10 +61,10 @@ class Experiment:
                                           dataset_root="/home/jimmy/Data/Didi/",
                                           pad_to_len=512,
                                           min_erase_rate=0.5,
-                                          max_erase_rate=0.7,
+                                          max_erase_rate=0.6,
                                           batch_size=1,
                                           drop_last=True,
-                                          shuffle=True,
+                                          shuffle=False,
                                           set_name="test",
                                           compute_guess=False, )
 
