@@ -1,7 +1,7 @@
 from JimmyTorch.Models import *
 
 class MultiLevelStagePropagator(nn.Module):
-    def __init__(self, d_state: int, d_cond: int, n_heads: int = 4):
+    def __init__(self, d_state: int, d_cond: int, n_heads: int = 8):
         super().__init__()
         self.cond_proj = nn.Sequential(
             nn.Linear(d_cond, d_state),
@@ -10,8 +10,11 @@ class MultiLevelStagePropagator(nn.Module):
             nn.Linear(d_state, d_state),
         )
 
-        self.pos_encoder = PosEncoderSinusoidal(d_state, max_len=3000, merge_mode="add")
-
+        self.pos_encoder = nn.Sequential(
+            PosEncoderSinusoidal(d_state, max_len=3000, merge_mode="concat"),
+            nn.Linear(d_state * 2, d_state),
+        )
+        self.ln = nn.LayerNorm(d_state)
         self.cross_attn = nn.MultiheadAttention(d_state, n_heads, batch_first=True)
 
     def forward(self, h, cond):
@@ -23,7 +26,7 @@ class MultiLevelStagePropagator(nn.Module):
         cat_h = self.pos_encoder(torch.cat(h, dim=2).transpose(1, 2))     # (B, L_all_state, d_state)
         cond = self.cond_proj(cond)     # (B, L_cond, d_state)
 
-        cat_h = cat_h + self.cross_attn(cat_h, cond, cond)[0]     # (B, L_all_state, d_state)
+        cat_h = cat_h + self.cross_attn(self.ln(cat_h), cond, cond)[0]     # (B, L_all_state, d_state)
 
         return list(torch.split(cat_h.transpose(1, 2), state_len_list, dim=2))     # n_stages * (B, d_state, L_state)
 
