@@ -42,11 +42,15 @@ class MixedCondEmbedder(nn.Module):
 
     def __updateAggregator(self):
         d_out = self.d_embed * self.l_embed
-        self.aggregators["non_sequential"] = nn.Sequential(FCLayers(
-            [self.total_non_seq_dim, self.total_non_seq_dim, d_out, d_out], 
-            act=nn.SiLU(inplace=True)
-            ), nn.Unflatten(-1, (self.l_embed, -1)))
-        
+        act = nn.SiLU(inplace=True)
+        self.aggregators["non_sequential"] = nn.Sequential(
+            act,
+            FCLayers([self.total_non_seq_dim, self.total_non_seq_dim, d_out, d_out], act=act, final_act=act),
+            nn.Unflatten(-1, (self.l_embed, -1)),
+            nn.Linear(self.d_embed, self.d_embed),
+            nn.LayerNorm(self.d_embed),
+        )
+
         self.aggregators["sequential"] = FCLayers(
             [self.total_seq_dim, self.total_seq_dim, self.d_embed],
             act=nn.SiLU(inplace=True)

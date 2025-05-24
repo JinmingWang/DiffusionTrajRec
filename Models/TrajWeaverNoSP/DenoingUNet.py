@@ -6,6 +6,7 @@ class UNetBlock(nn.Module):
                  d_hidden: int, 
                  d_out: int,
                  d_cond: int,
+                 n_heads: int,
                  scaling: Literal["down", "same", "up"]):
         """
         :param d_in: input dim
@@ -16,13 +17,25 @@ class UNetBlock(nn.Module):
         """
         super().__init__()
 
-        self.ca = nn.MultiheadAttention(d_in, 8, 0.0, kdim=d_cond, vdim=d_cond, batch_first=True)
+        self.ln = nn.LayerNorm(d_in)
+        self.ca = nn.MultiheadAttention(d_in, n_heads, 0.0, kdim=d_cond, vdim=d_cond, batch_first=True)
 
-        self.se_res = nn.Sequential(
+        self.res1 = nn.Sequential(
             GnSiLUConv1D(d_in, d_hidden, 3, 1, 1, gn_groups=16),
-            SELayer1D(d_hidden, 4),
-            GnSiLUConv1D(d_hidden, d_hidden, 3, 1, 1, gn_groups=16),
             GnSiLUConv1D(d_hidden, d_in, 3, 1, 1, gn_groups=16),
+        )
+
+        self.res2 = nn.Sequential(
+            GnSiLUConv1D(d_in, d_hidden, 3, 1, 1, gn_groups=16),
+            GnSiLUConv1D(d_hidden, d_in, 3, 1, 1, gn_groups=16),
+        )
+
+        self.self_attn = nn.Sequential(
+            Transpose(1, 2),
+            PosEncoderSinusoidal(d_in, 513, "add"),
+            nn.LayerNorm(d_in),
+            MHSA(d_in, n_heads),
+            Transpose(1, 2),
         )
 
         self.out_proj = nn.Sequential(
@@ -37,9 +50,41 @@ class UNetBlock(nn.Module):
         :param f: the state feature for this block
         :param cond: the conditional features
         """
-        x = x + self.ca(x.transpose(1, 2), cond, cond)[0].transpose(1, 2)
-        x = x + self.se_res(x)
+        x = x + self.ca(self.ln(x.transpose(1, 2)), cond, cond)[0].transpose(1, 2)
+        x = x + self.res1(x)
+        x = x + self.res2(x)
+        x = x + self.self_attn(x)
         return self.out_proj(x)
+
+
+
+class MidTransformerBlock(nn.Module):
+    def __init__(self,
+                 d_in: int,
+                 d_hidden: int,
+                 n_heads: int,
+                 ):
+        super().__init__()
+
+        self.transformer = nn.Sequential(
+            Transpose(1, 2),
+            nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=d_in,
+                    nhead=n_heads,
+                    dim_feedforward=d_hidden,
+                    batch_first=True,
+                    norm_first=True,
+                ),
+                num_layers=2,
+            ),
+            Transpose(1, 2),
+        )
+
+        self.out_proj = GnSiLUConv1D(d_in, d_in, 3, 1, 1, gn_groups=16)
+
+    def forward(self, x):
+        return self.out_proj(self.transformer(x))
 
 
 class DenoisingUNet(nn.Module):
@@ -48,6 +93,7 @@ class DenoisingUNet(nn.Module):
                  d_out: int,
                  d_cond: int,
                  d_list: list[int],
+                 n_heads: int,
                  ):
         super().__init__()
 
@@ -63,17 +109,17 @@ class DenoisingUNet(nn.Module):
         self.down_blocks = nn.ModuleList()
         for i in range(self.n_stages):
             self.down_blocks.append(UNetBlock(d_in=d_list[i], d_cond=d_cond,
-                                              d_hidden=d_list[i] * 2, d_out=d_list[i + 1],
+                                              d_hidden=d_list[i] * 2, d_out=d_list[i + 1], n_heads=n_heads,
                                               scaling="down"))
 
-        self.mid_block = UNetBlock(d_list[-1], d_list[-1] * 2, d_list[-1], d_cond=d_cond, scaling="same")
+        self.mid_block = MidTransformerBlock(d_list[-1], d_list[-1] * 2, n_heads=n_heads)
 
         self.merge_blocks = nn.ModuleList()
         self.up_blocks = nn.ModuleList()
         for i in range(self.n_stages, 0, -1):
             self.merge_blocks.append(nn.Conv1d(d_list[i] * 2, d_list[i], 3, 1, 1))
             self.up_blocks.append(UNetBlock(d_in=d_list[i], d_cond=d_cond,
-                                            d_hidden=d_list[i] * 2, d_out=d_list[i - 1],
+                                            d_hidden=d_list[i] * 2, d_out=d_list[i - 1], n_heads=n_heads,
                                             scaling="up"))
 
         self.head = nn.Sequential(
@@ -94,7 +140,7 @@ class DenoisingUNet(nn.Module):
             x = block(x, cond_embed)
             x_list.append(x)
 
-        x = self.mid_block(x, cond_embed)  # (B, d-1, l)
+        x = self.mid_block(x)  # (B, d-1, l)
 
         for i, block in enumerate(self.up_blocks):
             x = self.merge_blocks[i](torch.cat([x, x_list.pop()], dim=1))

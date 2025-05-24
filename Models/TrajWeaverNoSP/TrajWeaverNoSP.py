@@ -11,6 +11,7 @@ class TrajWeaverNoSP(JimmyModel):
                  d_out: int,
                  d_list: list[int],
                  d_embed: int,
+                 n_heads: int,
                  **JM_kwargs):
 
         super().__init__(**JM_kwargs)
@@ -21,13 +22,14 @@ class TrajWeaverNoSP(JimmyModel):
         self.embedder.addVector("start_pos", 2, 16)
         self.embedder.addVector("end_pos", 2, 16)
         self.embedder.addVector("avg_distance", 1, 16)
-        self.embedder.addCategorical("ddm_t", ddm.T, 32)
+        self.embedder.addVector("total_distance", 1, 16)
+        self.embedder.addVector("duration", 1, 16)
         self.embedder.addCategorical("start_weekday", 7, 16)
         self.embedder.addCategorical("start_minute", 24 * 60, 64)
         self.embedder.addCategorical("traj_len", 513, 64)
 
         # The denoising UNet module
-        self.denoising_unet = DenoisingUNet(d_in=d_in, d_out=d_out, d_list=d_list, d_cond=d_embed)
+        self.denoising_unet = DenoisingUNet(d_in=d_in, d_out=d_out, d_list=d_list, d_cond=d_embed, n_heads=n_heads)
 
         self.train_loss_names = ["Train_MSE"]
         self.eval_loss_names = ["Eval_MSE", "Geo_Dist"]
