@@ -49,7 +49,6 @@ class MixedCondEmbedder(nn.Module):
             nn.Unflatten(-1, (self.l_embed, -1)),
             nn.Linear(self.d_embed, self.d_embed),
             nn.LayerNorm(self.d_embed),
-            act
         )
         
         self.aggregators["sequential"] = FCLayers(

@@ -1,13 +1,20 @@
 from JimmyTorch.Models import *
 
 class MultiLevelStagePropagator(nn.Module):
-    def __init__(self, d_state: int, d_cond: int, n_heads: int = 8):
+    def __init__(self, d_state: int, d_cond: int, n_heads: int, ddm_T: int):
         super().__init__()
         self.cond_proj = nn.Sequential(
             nn.Linear(d_cond, d_state),
             nn.LayerNorm(d_state),
             nn.SiLU(inplace=True),
             nn.Linear(d_state, d_state),
+        )
+
+        silu = nn.SiLU(inplace=True)
+        self.t_embed = nn.Sequential(
+            nn.Embedding(ddm_T, d_state * 2),
+            FCLayers([d_state * 2, d_state * 2, d_state], act=silu),
+            nn.Unflatten(1, (1, d_state))  # (B, 1, d_embed)
         )
 
         self.pos_encoder = nn.Sequential(
@@ -17,7 +24,9 @@ class MultiLevelStagePropagator(nn.Module):
         self.ln = nn.LayerNorm(d_state)
         self.cross_attn = nn.MultiheadAttention(d_state, n_heads, batch_first=True)
 
-    def forward(self, h, cond):
+        self.ff = FCLayers([d_state, d_state, d_state], act=silu)
+
+    def forward(self, h, cond, ddm_t):
         """
         :param h: the state features n_stages * (B, d_state, L_state)
         :param cond: the conditional feature (B, L_cond, d_cond)
@@ -27,6 +36,7 @@ class MultiLevelStagePropagator(nn.Module):
         cond = self.cond_proj(cond)     # (B, L_cond, d_state)
 
         cat_h = cat_h + self.cross_attn(self.ln(cat_h), cond, cond)[0]     # (B, L_all_state, d_state)
+        cat_h = cat_h + self.ff(cat_h + self.t_embed(ddm_t))     # (B, L_all_state, d_state)
 
         return list(torch.split(cat_h.transpose(1, 2), state_len_list, dim=2))     # n_stages * (B, d_state, L_state)
 
