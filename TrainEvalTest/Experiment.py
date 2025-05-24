@@ -143,7 +143,7 @@ class Experiment:
             f.write(str(model))
 
         with open(os.path.join(log_dir, "comments.txt"), "w") as f:
-            f.write(f"{self.comments}.\n{self.__str__()}")
+            f.write(f"{self.comments}\n{self.__str__()}")
 
         rprint(f"[blue]Save directory: {save_dir}.[/blue]")
         rprint(f"[blue]Log directory: {log_dir}.[/blue]")
