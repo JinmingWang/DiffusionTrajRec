@@ -24,6 +24,7 @@ class TrajWeaverNoSP(JimmyModel):
         self.embedder.addVector("avg_distance", 1, 16)
         self.embedder.addVector("total_distance", 1, 16)
         self.embedder.addVector("duration", 1, 16)
+        self.embedder.addCategorical("ddm_t", ddm.T, 32)
         self.embedder.addCategorical("start_weekday", 7, 16)
         self.embedder.addCategorical("start_minute", 24 * 60, 64)
         self.embedder.addCategorical("traj_len", 513, 64)
